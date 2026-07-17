@@ -1,0 +1,11 @@
+# Runtime deps — pinned to the versions proven working in the v1.2.13 build.
+# Freeze with Python 3.11 (see Echo Prompts build instructions). Update deliberately,
+# then re-test the freeze. pyinstaller is a BUILD tool, installed separately (pinned) by
+# the build steps, not a runtime dependency.
+flask==3.1.3
+werkzeug==3.1.8
+groq==1.2.0
+boto3==1.43.12
+python-jose[cryptography]==3.5.0
+cryptography==48.0.0
+keyring==25.7.0

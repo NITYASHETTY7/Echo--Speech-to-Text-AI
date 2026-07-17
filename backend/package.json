@@ -1,0 +1,179 @@
+{
+  "name": "echo",
+  "version": "1.2.20",
+  "description": "Echo — desktop speech-to-text app",
+  "main": "public/electron.js",
+  "author": "Echo",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build": "electron-builder --mac",
+    "build-dmg": "electron-builder --mac --x64",
+    "build-arm": "electron-builder --mac --arm64",
+    "build-universal": "electron-builder --mac --universal",
+    "build-win": "electron-builder --win",
+    "build-win-x64": "electron-builder --win --x64",
+    "build-linux": "electron-builder --linux deb",
+    "build-linux-appimage": "electron-builder --linux AppImage",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.echo.app",
+    "productName": "Echo",
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo",
+      "executableName": "echo-dictation",
+      "extraResources": [
+        {
+          "from": "build-backend/dist/echo-backend",
+          "to": "backend/echo-backend"
+        },
+        {
+          "from": "sox-bundle/linux",
+          "to": "sox",
+          "filter": [
+            "**/*",
+            "!README.txt"
+          ]
+        }
+      ]
+    },
+    "deb": {
+      "depends": [
+        "xdotool",
+        "sox"
+      ]
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extraResources": [
+        {
+          "from": "build-backend/dist/echo-backend",
+          "to": "backend/echo-backend"
+        },
+        {
+          "from": "sox-bundle/mac",
+          "to": "sox",
+          "filter": [
+            "**/*",
+            "!README.txt"
+          ]
+        }
+      ]
+    },
+    "files": [
+      "public/**/*",
+      "templates/**/*",
+      "app.py",
+      "requirements.txt",
+      "!**/*.pyc",
+      "!**/__pycache__",
+      "!**/venv/**",
+      "!**/node_modules/**/.bin"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "build-backend/dist/echo-backend",
+          "to": "backend/echo-backend"
+        },
+        {
+          "from": "sox-bundle/win",
+          "to": "sox",
+          "filter": [
+            "**/*",
+            "!README.txt"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "include": "build/installer.nsh"
+    },
+    "directories": {
+      "buildResources": "assets",
+      "output": "dist"
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "extraResources": [
+      {
+        "from": "requirements.txt",
+        "to": "requirements.txt"
+      },
+      {
+        "from": "app.py",
+        "to": "app.py"
+      }
+    ]
+  },
+  "dependencies": {
+    "amazon-cognito-identity-js": "^6.3.12",
+    "electron-is-dev": "^2.0.0",
+    "form-data": "^4.0.5",
+    "node-record-lpcm16": "^1.0.1",
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "@babel/standalone": "^7.29.4",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5"
+  }
+}

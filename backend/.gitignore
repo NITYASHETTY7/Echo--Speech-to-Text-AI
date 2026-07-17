@@ -1,0 +1,57 @@
+# Virtual Environment
+venv/
+env/
+
+# Config files
+config.json
+config.backup.json
+
+# Internal docs — do NOT push
+CLAUDE.md
+ACCEPTANCE.md
+EXECUTION_PLAN.md
+
+# Local test artifacts (DynamoDB Local data — never commit)
+dynalite-data/
+
+# Recordings
+recordings/
+
+# History
+transcription_history.json
+
+# Server port file (dynamic port allocation)
+server_port.txt
+
+# Flask PID file (orphan reaping)
+flask.pid
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# Build outputs
+dist/
+dist-v12/
+dist-v*/
+build/*.app
+*.dmg
+*.zip
+
+# PyInstaller backend freeze artifacts
+build-backend/
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+#.\.venv\Scripts\Activate.ps1
+#py app.py
+

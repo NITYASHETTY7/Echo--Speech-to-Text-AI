@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- ── Core brand ───────────────────────────────────────── -->
+    <color name="echo_primary">#FF9AA8FF</color>
+    <color name="echo_on_primary">#FF0A0F2E</color>
+    <color name="echo_primary_container">#FF1E245C</color>
+    <color name="echo_on_primary_container">#FFDDE1FF</color>
+
+    <color name="echo_secondary">#FFB0B8FF</color>
+    <color name="echo_on_secondary">#FF0D1550</color>
+    <color name="echo_secondary_container">#FF232C6A</color>
+    <color name="echo_on_secondary_container">#FFDDE1FF</color>
+
+    <color name="echo_tertiary">#FFCFB7FF</color>
+    <color name="echo_on_tertiary">#FF25005A</color>
+    <color name="echo_tertiary_container">#FF3C1F72</color>
+    <color name="echo_on_tertiary_container">#FFEFDBFF</color>
+
+    <!-- ── Surfaces ─────────────────────────────────────────── -->
+    <color name="echo_background">#FF121212</color>
+    <color name="echo_on_background">#FFE8EAF6</color>
+
+    <color name="echo_surface">#FF1C1C22</color>
+    <color name="echo_on_surface">#FFE8EAF6</color>
+    <color name="echo_surface_variant">#FF232329</color>
+    <color name="echo_on_surface_variant">#FF9E9EAE</color>
+
+    <color name="echo_card">#FF232329</color>
+
+    <!-- ── State / status ───────────────────────────────────── -->
+    <color name="echo_error">#FFCF6679</color>
+    <color name="echo_on_error">#FF690020</color>
+    <color name="echo_error_container">#FF93002A</color>
+    <color name="echo_on_error_container">#FFFFDAD9</color>
+
+    <!-- ── Outline ───────────────────────────────────────────── -->
+    <color name="echo_outline">#FF3A3A4A</color>
+    <color name="echo_outline_variant">#FF2C2C3A</color>
+
+    <!-- ── Legacy aliases (kept for backward compatibility) ─── -->
+    <color name="echo_accent">#FF7C8CFF</color>
+
+    <!-- ── Launcher icon adaptive background ────────────────── -->
+    <!-- Matches the blue corner of the icon's gradient -->
+    <color name="ic_launcher_background">#FF5B6BF8</color>
+
+</resources>

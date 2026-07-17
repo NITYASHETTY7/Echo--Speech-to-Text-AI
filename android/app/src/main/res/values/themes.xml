@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        This is a Compose-only project — there is no Material Components XML library on the
+        classpath.  The XML theme is only used for window chrome (status bar, nav bar colours)
+        before Compose takes over the surface.  All M3 theming is done inside EchoTheme via
+        MaterialTheme in Theme.kt; nothing here needs MDC attrs.
+    -->
+    <style name="Theme.Echo" parent="android:style/Theme.Material.Light.NoActionBar">
+        <!-- Matches the Compose dark background so the window chrome is seamless -->
+        <item name="android:statusBarColor">@color/echo_background</item>
+        <item name="android:navigationBarColor">@color/echo_background</item>
+        <item name="android:windowBackground">@color/echo_background</item>
+        <!-- Light-on-dark icons: false = white icons on the dark bar -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">@color/echo_primary</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+</resources>

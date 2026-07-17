@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Echo</string>
+    <string name="accessibility_service_description">Allows Echo to automatically insert transcribed text into text fields. This service does not collect or store any data.</string>
+    <string name="history_timestamp_format">%1$s &#8226; %2$s</string>
+</resources>

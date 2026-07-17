@@ -1,0 +1,5 @@
+-keepattributes Signature,*Annotation*
+-keep class com.echo.dictation.data.remote.dto.** { *; }
+-keep class androidx.room.** { *; }
+-dontwarn okhttp3.**
+-dontwarn retrofit2.**

@@ -1,0 +1,2616 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Echo</title>
+    <!-- Vendored locally (v1.2.13) so the UI never needs the internet to render.
+         Previously these loaded from unpkg/jsdelivr/cdn.tailwindcss.com; if any CDN
+         was unreachable/AV-blocked at launch the whole window rendered blank. -->
+    <script src="/static/vendor/react.production.min.js"></script>
+    <script src="/static/vendor/react-dom.production.min.js"></script>
+    <script src="/static/vendor/babel.min.js"></script>
+    <script src="/static/vendor/react-router-dom.production.min.js"></script>
+    <script src="/static/vendor/amazon-cognito-identity.min.js"></script>
+    <script src="/static/vendor/tailwind.js"></script>
+    <style>
+        @keyframes slideUp {
+            from { transform: translateY(100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .slide-up {
+            animation: slideUp 0.3s ease-out;
+        }
+        @keyframes flash {
+            0%, 100% { opacity: 0; }
+            50% { opacity: 0.3; }
+        }
+        .flash-overlay {
+            animation: flash 0.3s ease-out;
+        }
+        
+        /* CSS Custom Properties for responsive pill sizing */
+        :root {
+            --pill-scale: 1;
+            --pill-compact-width: 50px;
+            --pill-compact-height: 12px;
+            --pill-hover-width: 80px;
+            --pill-hover-height: 32px;
+            --pill-expanded-width: 350px;
+            --pill-expanded-height: 40px;
+            --pill-recording-width: 130px;
+            --pill-recording-height: 28px;
+        }
+        
+        /* Pill-specific styles - transparent background for rounded pill effect */
+        html.pill-mode,
+        html.pill-mode body,
+        html.pill-mode body.bg-gray-50,
+        html.pill-mode #root,
+        body.pill-mode,
+        body.pill-mode #root {
+            background: transparent !important;
+            background-color: transparent !important;
+            color-scheme: dark;
+            overflow: hidden;
+        }
+        
+        /* Pill wrapper - positions pill at bottom of container */
+        .pill-wrapper {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+        }
+        
+        /* The actual pill that animates between states - direct height changes */
+        .pill-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9999px;
+            background: #000000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                        height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                        padding 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                        border-radius 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                        background 0.4s ease;
+            cursor: pointer;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+        
+        /* Compact state - small rounded rectangle, 50% transparent */
+        .pill-container.compact {
+            width: var(--pill-compact-width);
+            height: var(--pill-compact-height);
+            padding: 0;
+            gap: 0;
+            background: rgba(0, 0, 0, 0.5);  /* 50% transparent black */
+            border: none;
+            border-radius: calc(var(--pill-compact-height) / 2);  /* Half of height for pill shape */
+        }
+        
+        /* Hover-expanded state - shows mic button + three dots */
+        .pill-container.hover-expanded {
+            width: var(--pill-hover-width);
+            height: var(--pill-hover-height);
+            padding: 0 8px;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.85);  /* More opaque on hover */
+            border: none;
+            border-radius: calc(var(--pill-hover-height) / 2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        /* Fully expanded state - shows input selection + minimize */
+        .pill-container.fully-expanded {
+            width: var(--pill-expanded-width);
+            height: var(--pill-expanded-height);
+            padding: 0 12px;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.95);
+            border: none;
+            border-radius: calc(var(--pill-expanded-height) / 2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        /* Recording state - full size, fully opaque */
+        .pill-container.recording {
+            width: var(--pill-recording-width);
+            height: var(--pill-recording-height);
+            padding: 0 12px;
+            gap: 10px;
+            background: #000000;  /* Fully opaque black */
+            border: none;
+            border-radius: calc(var(--pill-recording-height) / 2);
+        }
+        
+        /* Processing/Success/Error states - same size as recording, fully opaque */
+        .pill-container.expanded {
+            width: var(--pill-recording-width);
+            height: var(--pill-recording-height);
+            padding: 0 12px;
+            gap: 8px;
+            background: #000000;  /* Fully opaque black */
+            border: none;
+            cursor: default;
+            border-radius: calc(var(--pill-recording-height) / 2);
+        }
+        
+        /* Mic button for hover-expanded state */
+        .pill-mic-button {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.15);
+        }
+        
+        .pill-mic-button:hover {
+            background: rgba(255, 255, 255, 0.25);
+            transform: scale(1.08);
+        }
+        
+        .pill-mic-button svg {
+            width: 14px;
+            height: 14px;
+        }
+        
+        /* Waveform container - centered */
+        .pill-waveform {
+            flex: 1;
+            min-width: 60px;
+            max-width: 80px;
+            height: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        /* Timestamp - right aligned */
+        .pill-time {
+            font-size: 10px;
+            font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.8);
+            white-space: nowrap;
+            flex-shrink: 0;
+            min-width: 28px;
+            text-align: right;
+        }
+        
+        /* Recording layout: [Waveform] [Time] - no stop button, clicking pill stops */
+        .pill-recording-layout {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* Status text for processing/success/error */
+        .pill-status-text {
+            font-size: 10px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            white-space: nowrap;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        /* Legacy button styles for expanded state */
+        .pill-button {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+            flex-shrink: 0;
+            position: relative;
+            background: transparent;
+        }
+        
+        .pill-button:hover:not(:disabled) {
+            transform: scale(1.05);
+        }
+        
+        .pill-button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+        
+        .pill-button svg {
+            width: 12px;
+            height: 12px;
+        }
+        
+        .pill-inner-content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            height: 100%;
+        }
+        
+        .pill-selector {
+            padding: 3px 6px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            font-size: 9px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            outline: none;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            max-width: 110px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .pill-selector:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        .pill-selector:disabled {
+            cursor: not-allowed;
+            opacity: 0.4;
+        }
+        
+        .pill-selector svg {
+            width: 9px;
+            height: 9px;
+        }
+        
+        .pill-selector option {
+            background: #1f2937;
+            color: white;
+        }
+        
+        /* Three dots menu button */
+        .pill-menu-button {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .pill-menu-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.08);
+        }
+        
+        .pill-menu-button svg {
+            width: 16px;
+            height: 16px;
+        }
+        
+        /* Minimize button */
+        .pill-minimize-button {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .pill-minimize-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .pill-minimize-button svg {
+            width: 12px;
+            height: 12px;
+        }
+
+        /* Quit button — bigger + clearly red so users can hit it on Mac/Windows
+           without missing. The old 20px button was too small to reliably click. */
+        .pill-close-button {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+            flex-shrink: 0;
+            background: rgba(239, 68, 68, 0.18);
+        }
+
+        .pill-close-button:hover {
+            background: rgba(239, 68, 68, 0.85);
+            transform: scale(1.06);
+        }
+
+        .pill-close-button svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .pill-close-button:hover svg {
+            stroke: white !important;
+        }
+        
+        /* Input device selector in pill */
+        .pill-input-selector {
+            flex: 1;
+            padding: 3px 6px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            font-size: 10px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            outline: none;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .pill-input-selector:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        .pill-input-selector option {
+            background: #1f2937;
+            color: white;
+        }
+        
+        /* Hover content container */
+        .pill-hover-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            height: 100%;
+            gap: 8px;
+        }
+        
+        /* Expanded content container */
+        .pill-expanded-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            height: 100%;
+            gap: 8px;
+        }
+        
+    </style>
+</head>
+<body class="bg-gray-50 transition-colors duration-300">
+    <div id="root"></div>
+
+    {% raw %}
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Fetch helper that attaches the Cognito bearer token (from the main process)
+        // when running under Electron. In browser-only mode it falls back to plain fetch.
+        async function authedFetch(url, options = {}) {
+            let token = '';
+            try {
+                if (window.electron && window.electron.ipcRenderer && window.electron.ipcRenderer.invoke) {
+                    token = await window.electron.ipcRenderer.invoke('get-auth-token');
+                }
+            } catch (_) { /* no token available */ }
+            const headers = { ...(options.headers || {}) };
+            if (token) headers['Authorization'] = 'Bearer ' + token;
+            return fetch(url, { ...options, headers });
+        }
+
+        // (removed) dead global 'pill-hotkey-*' window listeners that drove the old
+        // window.__pillSet* contract. Main now updates the pill via the single
+        // 'pill-state' IPC channel handled inside the Pill component (Phase 1 / D7).
+
+        // LiveWaveform Component
+        // simulateAudio prop shows animated bars without accessing microphone (for background recording)
+        function LiveWaveform({ active, processing, simulateAudio = false, mode = 'static', height = 120, barColor = '#3b82f6', barWidth = 3, barGap = 1 }) {
+            const canvasRef = useRef(null);
+            const animationRef = useRef(null);
+            const audioContextRef = useRef(null);
+            const analyserRef = useRef(null);
+            const historyRef = useRef([]);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                
+                canvas.width = canvas.offsetWidth * dpr;
+                canvas.height = canvas.offsetHeight * dpr;
+                ctx.scale(dpr, dpr);
+
+                // Show animated waveform for processing OR simulated audio (background recording)
+                if (processing || simulateAudio) {
+                    const animate = () => {
+                        ctx.clearRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
+                        const barCount = Math.floor(canvas.offsetWidth / (barWidth + barGap));
+                        const centerY = canvas.offsetHeight / 2;
+                        
+                        for (let i = 0; i < barCount; i++) {
+                            const x = i * (barWidth + barGap);
+                            // Different animation for simulated audio vs processing
+                            const speed = simulateAudio ? 300 : 500;
+                            const amplitude = simulateAudio ? 0.7 : 0.5;
+                            const phase = (Date.now() / speed + i / 5) % (Math.PI * 2);
+                            const baseHeight = simulateAudio ? 8 : 25;
+                            const barHeight = Math.sin(phase) * (canvas.offsetHeight * amplitude * 0.4) + baseHeight;
+                            const y = centerY - barHeight / 2;
+                            
+                            ctx.fillStyle = barColor;
+                            ctx.fillRect(x, y, barWidth, Math.max(barHeight, 2));
+                        }
+                        
+                        animationRef.current = requestAnimationFrame(animate);
+                    };
+                    animate();
+                }
+
+                return () => {
+                    if (animationRef.current) {
+                        cancelAnimationFrame(animationRef.current);
+                    }
+                };
+            }, [processing, simulateAudio, barColor, barWidth, barGap]);
+
+            useEffect(() => {
+                if (!active) return;
+
+                const setupAudio = async () => {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        const audioContext = new AudioContext();
+                        const analyser = audioContext.createAnalyser();
+                        const source = audioContext.createMediaStreamSource(stream);
+                        
+                        analyser.fftSize = 256;
+                        analyser.smoothingTimeConstant = 0.8;
+                        source.connect(analyser);
+                        
+                        audioContextRef.current = audioContext;
+                        analyserRef.current = analyser;
+
+                        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                        const canvas = canvasRef.current;
+                        const ctx = canvas.getContext('2d');
+
+                        const draw = () => {
+                            if (!active) return;
+                            
+                            analyser.getByteFrequencyData(dataArray);
+                            ctx.clearRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
+
+                            if (mode === 'static') {
+                                const barCount = Math.floor(canvas.offsetWidth / (barWidth + barGap));
+                                const centerY = canvas.offsetHeight / 2;
+                                
+                                for (let i = 0; i < barCount; i++) {
+                                    const dataIndex = Math.floor(i * dataArray.length / barCount);
+                                    const barHeight = (dataArray[dataIndex] / 255) * (canvas.offsetHeight * 0.8);
+                                    const x = i * (barWidth + barGap);
+                                    const y = centerY - barHeight / 2;
+                                    
+                                    ctx.fillStyle = barColor;
+                                    ctx.fillRect(x, y, barWidth, barHeight);
+                                }
+                            } else {
+                                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                                historyRef.current.push(average);
+                                if (historyRef.current.length > 60) historyRef.current.shift();
+                                
+                                historyRef.current.forEach((value, i) => {
+                                    const barHeight = (value / 255) * canvas.offsetHeight;
+                                    const x = canvas.offsetWidth - (historyRef.current.length - i) * (barWidth + barGap);
+                                    const y = canvas.offsetHeight - barHeight;
+                                    
+                                    ctx.fillStyle = barColor;
+                                    ctx.fillRect(x, y, barWidth, barHeight);
+                                });
+                            }
+                            
+                            animationRef.current = requestAnimationFrame(draw);
+                        };
+                        draw();
+                    } catch (err) {
+                        console.error('Error accessing microphone:', err);
+                    }
+                };
+
+                setupAudio();
+
+                return () => {
+                    if (animationRef.current) {
+                        cancelAnimationFrame(animationRef.current);
+                    }
+                    if (audioContextRef.current) {
+                        audioContextRef.current.close();
+                    }
+                    historyRef.current = [];
+                };
+            }, [active, mode, barColor, barWidth, barGap]);
+
+            return (
+                <div className="w-full" style={{ height: `${height}px` }}>
+                    <canvas 
+                        ref={canvasRef} 
+                        className="w-full h-full rounded-lg"
+                        style={{ height: `${height}px` }}
+                    />
+                </div>
+            );
+        }
+
+        function EchoLogo({ size = 40 }) {
+            const gid = 'echog' + size;
+            return (
+                <svg width={size} height={size} viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" style={{flexShrink:0}}>
+                    <defs>
+                        <linearGradient id={gid} x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+                            <stop offset="0" stopColor="#0EA5E9"/>
+                            <stop offset="0.5" stopColor="#6366F1"/>
+                            <stop offset="1" stopColor="#A855F7"/>
+                        </linearGradient>
+                    </defs>
+                    <rect width="512" height="512" rx="112" fill={`url(#${gid})`}/>
+                    <g fill="#FFFFFF">
+                        <rect x="238" y="116" width="36" height="280" rx="18"/>
+                        <rect x="174" y="146" width="36" height="220" rx="18"/>
+                        <rect x="302" y="146" width="36" height="220" rx="18"/>
+                        <rect x="110" y="181" width="36" height="150" rx="18"/>
+                        <rect x="366" y="181" width="36" height="150" rx="18"/>
+                        <rect x="46"  y="211" width="36" height="90"  rx="18" fillOpacity="0.7"/>
+                        <rect x="430" y="211" width="36" height="90"  rx="18" fillOpacity="0.7"/>
+                    </g>
+                </svg>
+            );
+        }
+
+        // LoginScreen — shown in its own window (#/login) when auth is required.
+        function LoginScreen() {
+            const [email, setEmail] = useState('');
+            const [otp, setOtp] = useState('');
+            const [password, setPassword] = useState(''); // Cognito path only
+            const [error, setError] = useState('');
+            const [busy, setBusy] = useState(false);
+            const [cfg, setCfg] = useState(null);
+            const [otpSent, setOtpSent] = useState(false);
+            const [otpMessage, setOtpMessage] = useState('');
+
+            useEffect(() => {
+                fetch('/api/auth-config').then(r => r.json()).then(setCfg).catch(() => {});
+            }, []);
+
+            const mode = cfg ? cfg.mode : null;       // 'cognito' | 'local' | 'dev'
+            const isLocal = mode === 'local';
+
+            const loginWithGoogle = () => {
+                if (window.electron) window.electron.ipcRenderer.send('auth-google-start');
+            };
+
+            // Cognito email/password (production).
+            const loginWithCognito = (e) => {
+                e.preventDefault();
+                setError('');
+                if (!cfg || !cfg.user_pool_id || !cfg.client_id) {
+                    setError('Login is not configured yet.');
+                    return;
+                }
+                if (!window.AmazonCognitoIdentity) {
+                    setError('Auth library failed to load.');
+                    return;
+                }
+                setBusy(true);
+                const AC = window.AmazonCognitoIdentity;
+                const pool = new AC.CognitoUserPool({ UserPoolId: cfg.user_pool_id, ClientId: cfg.client_id });
+                const user = new AC.CognitoUser({ Username: email, Pool: pool });
+                const details = new AC.AuthenticationDetails({ Username: email, Password: password });
+                user.authenticateUser(details, {
+                    onSuccess: (result) => {
+                        const tokens = {
+                            idToken: result.getIdToken().getJwtToken(),
+                            accessToken: result.getAccessToken().getJwtToken(),
+                            refreshToken: result.getRefreshToken().getToken(),
+                        };
+                        if (window.electron) window.electron.ipcRenderer.send('auth-login-success', tokens);
+                    },
+                    onFailure: (err) => { setBusy(false); setError(err.message || 'Login failed'); },
+                });
+            };
+
+            // Step 1: send OTP to email (local mode).
+            const sendOtp = async (e) => {
+                e.preventDefault();
+                setError('');
+                setBusy(true);
+                try {
+                    const res = await fetch('/api/local-auth/send-otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        setOtpSent(true);
+                        setOtpMessage(data.message || 'Check the app console for your OTP code.');
+                    } else {
+                        throw new Error(data.error || 'Failed to send OTP');
+                    }
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setBusy(false);
+                }
+            };
+
+            // Step 2: verify OTP (local mode).
+            const verifyOtp = async (e) => {
+                e.preventDefault();
+                setError('');
+                setBusy(true);
+                try {
+                    const res = await fetch('/api/local-auth/verify-otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email, otp })
+                    });
+                    const data = await res.json();
+                    if (data.success && data.token) {
+                        if (window.electron) window.electron.ipcRenderer.send('auth-login-success', { idToken: data.token });
+                    } else {
+                        throw new Error(data.error || 'Verification failed');
+                    }
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setBusy(false);
+                }
+            };
+
+            const inputCls = "w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
+
+            return (
+                <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-900 text-white px-8"
+                     style={{ WebkitAppRegion: 'drag' }}>
+                    <div className="mb-6 flex flex-col items-center gap-3" style={{ WebkitAppRegion: 'no-drag' }}>
+                        <EchoLogo size={64} />
+                        <h1 className="text-2xl font-bold">Echo</h1>
+                        <p className="text-sm text-gray-400">Sign in to continue</p>
+                        {isLocal && (
+                            <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400">
+                                Local test mode
+                            </span>
+                        )}
+                    </div>
+
+                    <div className="w-full max-w-xs" style={{ WebkitAppRegion: 'no-drag' }}>
+                        {/* Cognito: Google button + email/password */}
+                        {!isLocal && (
+                            <>
+                                <button onClick={loginWithGoogle}
+                                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white text-gray-800 font-medium hover:bg-gray-100 transition-colors mb-4">
+                                    <span className="text-lg">G</span> Continue with Google
+                                </button>
+                                <div className="flex items-center gap-3 my-4 text-xs text-gray-500">
+                                    <div className="flex-1 h-px bg-gray-700" /> or <div className="flex-1 h-px bg-gray-700" />
+                                </div>
+                                <form onSubmit={loginWithCognito} className="space-y-3">
+                                    <input type="email" required placeholder="Email" value={email}
+                                           onChange={(e) => setEmail(e.target.value)} className={inputCls} />
+                                    <input type="password" required placeholder="Password" value={password}
+                                           onChange={(e) => setPassword(e.target.value)} className={inputCls} />
+                                    {error && <p className="text-xs text-red-400">⚠️ {error}</p>}
+                                    <button type="submit" disabled={busy}
+                                            className="w-full px-4 py-2.5 rounded-lg bg-indigo-500 text-white font-medium hover:bg-indigo-600 disabled:opacity-50 transition-colors">
+                                        {busy ? 'Signing in…' : 'Sign in'}
+                                    </button>
+                                </form>
+                            </>
+                        )}
+
+                        {/* Local OTP: Step 1 — enter email */}
+                        {isLocal && !otpSent && (
+                            <form onSubmit={sendOtp} className="space-y-3">
+                                <input type="email" required placeholder="Your email address" value={email}
+                                       onChange={(e) => setEmail(e.target.value)} className={inputCls} />
+                                {error && <p className="text-xs text-red-400">⚠️ {error}</p>}
+                                <button type="submit" disabled={busy}
+                                        className="w-full px-4 py-2.5 rounded-lg bg-indigo-500 text-white font-medium hover:bg-indigo-600 disabled:opacity-50 transition-colors">
+                                    {busy ? 'Sending…' : 'Send OTP'}
+                                </button>
+                            </form>
+                        )}
+
+                        {/* Local OTP: Step 2 — enter OTP */}
+                        {isLocal && otpSent && (
+                            <form onSubmit={verifyOtp} className="space-y-3">
+                                <p className="text-xs text-amber-400 text-center">{otpMessage}</p>
+                                <input type="text" required placeholder="Enter 6-digit OTP" value={otp}
+                                       onChange={(e) => setOtp(e.target.value)} maxLength={6}
+                                       className={`${inputCls} tracking-[0.4em] text-center font-mono text-lg`} />
+                                {error && <p className="text-xs text-red-400">⚠️ {error}</p>}
+                                <button type="submit" disabled={busy}
+                                        className="w-full px-4 py-2.5 rounded-lg bg-indigo-500 text-white font-medium hover:bg-indigo-600 disabled:opacity-50 transition-colors">
+                                    {busy ? 'Verifying…' : 'Verify OTP'}
+                                </button>
+                                <button type="button" onClick={() => { setOtpSent(false); setOtp(''); setError(''); }}
+                                        className="w-full text-xs text-gray-400 hover:text-gray-200 transition-colors py-1">
+                                    Back / resend OTP
+                                </button>
+                            </form>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // FeedbackModal — star rating + comment, stored in DynamoDB via /api/feedback.
+        function FeedbackModal({ isOpen, onClose, isDarkMode = false }) {
+            const [rating, setRating] = useState(0);
+            const [comment, setComment] = useState('');
+            const [busy, setBusy] = useState(false);
+            const [done, setDone] = useState(false);
+            const [error, setError] = useState('');
+
+            useEffect(() => {
+                if (isOpen) { setRating(0); setComment(''); setDone(false); setError(''); }
+            }, [isOpen]);
+
+            if (!isOpen) return null;
+
+            const submit = async () => {
+                setBusy(true); setError('');
+                try {
+                    const res = await authedFetch('/api/feedback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rating, comment }),
+                    });
+                    const d = await res.json();
+                    if (d.success) { setDone(true); setTimeout(onClose, 1200); }
+                    else setError(d.error || 'Could not send feedback');
+                } catch (e) {
+                    setError('Could not send feedback');
+                } finally { setBusy(false); }
+            };
+
+            const panel = isDarkMode ? 'bg-gray-900 text-white' : 'bg-white text-gray-900';
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+                    <div className={`w-full max-w-md rounded-2xl p-6 ${panel}`} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-lg font-bold mb-1">Send Feedback</h2>
+                        <p className={`text-xs mb-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>How is Echo working for you?</p>
+                        {done ? (
+                            <p className="text-sm text-green-500 py-6 text-center">✓ Thanks for your feedback!</p>
+                        ) : (
+                            <>
+                                <div className="flex gap-1 mb-4">
+                                    {[1,2,3,4,5].map(n => (
+                                        <button key={n} onClick={() => setRating(n)}
+                                                className={`text-2xl transition-transform hover:scale-110 ${n <= rating ? 'text-amber-400' : (isDarkMode ? 'text-gray-700' : 'text-gray-300')}`}>★</button>
+                                    ))}
+                                </div>
+                                <textarea value={comment} onChange={(e) => setComment(e.target.value)}
+                                          placeholder="Tell us more (optional)" rows={4}
+                                          className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3 ${isDarkMode ? 'bg-gray-800 border border-gray-700 text-white' : 'bg-gray-50 border border-gray-300 text-gray-900'}`} />
+                                {error && <p className="text-xs text-red-400 mb-3 flex items-center gap-1"><span>⚠️</span> {error}</p>}
+                                <div className="flex justify-end gap-3">
+                                    <button onClick={onClose} className={`px-4 py-2 text-sm font-medium ${isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-800'}`}>Cancel</button>
+                                    <button onClick={submit} disabled={busy || rating === 0}
+                                            className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-500 text-white hover:bg-indigo-600 disabled:opacity-50">
+                                        {busy ? 'Sending…' : 'Send'}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // MicSelector Component
+        function MicSelector({ value, onValueChange, disabled, isDarkMode = false }) {
+            const [devices, setDevices] = useState([]);
+            const [isOpen, setIsOpen] = useState(false);
+            const [previewActive, setPreviewActive] = useState(false);
+
+            useEffect(() => {
+                loadDevices();
+                navigator.mediaDevices.addEventListener('devicechange', loadDevices);
+                return () => {
+                    navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
+                };
+            }, []);
+
+            const loadDevices = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    const deviceList = await navigator.mediaDevices.enumerateDevices();
+                    const audioInputs = deviceList
+                        .filter(device => device.kind === 'audioinput')
+                        .map(device => ({
+                            deviceId: device.deviceId,
+                            label: device.label.replace(/\s*\(.*?\)\s*/g, '').trim() || `Microphone ${device.deviceId.slice(0, 5)}`
+                        }));
+                    
+                    setDevices(audioInputs);
+                    if (audioInputs.length > 0 && !value) {
+                        onValueChange?.(audioInputs[0].deviceId);
+                    }
+                } catch (err) {
+                    console.error('Error loading devices:', err);
+                }
+            };
+
+            const selectedDevice = devices.find(d => d.deviceId === value);
+
+            return (
+                <div className="relative">
+                    <button
+                        onClick={() => !disabled && setIsOpen(!isOpen)}
+                        disabled={disabled}
+                        className={`flex items-center gap-2 px-3 py-2 border rounded-lg text-sm font-medium focus:outline-none focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'border-gray-700 bg-gray-800 hover:bg-gray-700 text-white focus:ring-gray-600' : 'border-gray-300 bg-white hover:bg-gray-50 text-gray-900 focus:ring-blue-500'}`}
+                    >
+                        <span>🎤</span>
+                        <span>{selectedDevice?.label || 'Select Microphone'}</span>
+                        <span className="ml-2">{isOpen ? '▲' : '▼'}</span>
+                    </button>
+                    
+                    {isOpen && (
+                        <div className={`absolute top-full mt-2 left-0 w-80 border rounded-lg shadow-xl z-50 p-2 ${isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}>
+                            <div className="mb-2">
+                                <LiveWaveform 
+                                    active={previewActive} 
+                                    mode="scrolling" 
+                                    height={60}
+                                    barWidth={2}
+                                />
+                                <button
+                                    onClick={() => setPreviewActive(!previewActive)}
+                                    className={`w-full mt-2 px-3 py-1.5 text-xs font-medium rounded ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-900'}`}
+                                >
+                                    {previewActive ? '⏸️ Pause Preview' : '▶️ Test Audio'}
+                                </button>
+                            </div>
+                            <div className="max-h-48 overflow-y-auto space-y-1">
+                                {devices.map(device => (
+                                    <button
+                                        key={device.deviceId}
+                                        onClick={() => {
+                                            onValueChange?.(device.deviceId);
+                                            setIsOpen(false);
+                                            setPreviewActive(false);
+                                        }}
+                                        className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
+                                            device.deviceId === value
+                                                ? (isDarkMode ? 'bg-gray-800 text-gray-200 font-medium' : 'bg-blue-50 text-blue-700 font-medium')
+                                                : (isDarkMode ? 'hover:bg-gray-800 text-gray-300' : 'hover:bg-gray-100 text-gray-900')
+                                        }`}
+                                    >
+                                        {device.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    {isOpen && (
+                        <div 
+                            className="fixed inset-0 z-40" 
+                            onClick={() => {
+                                setIsOpen(false);
+                                setPreviewActive(false);
+                            }}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        // Settings Dialog Component
+        function SettingsDialog({ isOpen, onClose, onSave, isDarkMode = false, onToggleTheme }) {
+            const [groqKey, setGroqKey] = useState('');
+            const [openaiKey, setOpenaiKey] = useState('');
+            const [bedrockKey, setBedrockKey] = useState('');
+            const [provider, setProvider] = useState('groq');   // #4 selected API provider
+            const [previews, setPreviews] = useState({});       // #6 masked key previews
+            const [language, setLanguage] = useState('en');
+            const [retention, setRetention] = useState(30);
+            const [grammarEnabled, setGrammarEnabled] = useState(true);     // grammar correction on/off (Bedrock-only)
+            const [configured, setConfigured] = useState({ groq: false, openai: false, bedrock: false });
+            const [testState, setTestState] = useState({});
+            const [warning, setWarning] = useState('');
+            const [error, setError] = useState('');
+            const [saving, setSaving] = useState(false);
+            const [autoStart, setAutoStart] = useState(false);
+            const [accountEmail, setAccountEmail] = useState('');
+            const [appVersion, setAppVersion] = useState('');
+            const hasElectron = !!(window.electron && window.electron.ipcRenderer && window.electron.ipcRenderer.invoke);
+
+            useEffect(() => {
+                if (!isOpen || !hasElectron) return;
+                window.electron.ipcRenderer.invoke('get-login-item-status').then(v => setAutoStart(!!v)).catch(() => {});
+                window.electron.ipcRenderer.invoke('get-app-version').then(v => setAppVersion(v || '')).catch(() => {});
+                // Decode the signed-in email from the current token (no extra endpoint needed)
+                window.electron.ipcRenderer.invoke('get-auth-token').then((tok) => {
+                    if (!tok) { setAccountEmail(''); return; }
+                    try {
+                        const p = JSON.parse(atob(tok.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+                        setAccountEmail(p.email || p.sub || '');
+                    } catch (_) { setAccountEmail(''); }
+                }).catch(() => {});
+            }, [isOpen]);
+
+            const toggleAutoStart = async () => {
+                if (!hasElectron) return;
+                const next = !autoStart;
+                await window.electron.ipcRenderer.invoke('set-login-item', next).catch(() => {});
+                setAutoStart(next);
+            };
+
+            const handleLogout = () => { if (hasElectron) window.electron.ipcRenderer.send('auth-logout'); };
+            const handleQuit = () => { if (hasElectron) window.electron.ipcRenderer.send('app-quit'); };
+
+            // Load current settings whenever the dialog opens
+            useEffect(() => {
+                if (!isOpen) return;
+                setError('');
+                setTestState({});
+                (async () => {
+                    try {
+                        const res = await fetch('/api/settings');
+                        const d = await res.json();
+                        const p = d.providers || {};
+                        setConfigured({
+                            groq: !!(p.groq && p.groq.configured),
+                            openai: !!(p.openai && p.openai.configured),
+                            bedrock: !!(p.bedrock && p.bedrock.configured),
+                        });
+                        setPreviews({
+                            groq: (p.groq && p.groq.preview) || '',
+                            openai: (p.openai && p.openai.preview) || '',
+                            bedrock: (p.bedrock && p.bedrock.preview) || '',
+                        });
+                        setLanguage(d.language || 'en');
+                        setRetention(d.retention_days != null ? d.retention_days : 30);
+                        setGrammarEnabled(d.grammar_correction_enabled !== false);
+                        setWarning(d.storage_warning || '');
+                    } catch (e) { /* ignore load errors */ }
+                })();
+            }, [isOpen]);
+
+            const testConnection = async (provider) => {
+                setTestState((s) => ({ ...s, [provider]: { status: 'testing' } }));
+                const body = { provider };
+                if (provider === 'groq') body.api_key = groqKey;
+                if (provider === 'openai') body.api_key = openaiKey;
+                if (provider === 'bedrock') body.bedrock_api_key = bedrockKey;
+                try {
+                    const res = await fetch('/api/settings/test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const d = await res.json();
+                    setTestState((s) => ({ ...s, [provider]: { status: d.success ? 'ok' : 'fail', msg: d.error } }));
+                } catch (e) {
+                    setTestState((s) => ({ ...s, [provider]: { status: 'fail', msg: 'Network error' } }));
+                }
+            };
+
+            const saveProvider = async (url, body, name) => {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const d = await res.json();
+                if (!d.success) throw new Error(name + ': ' + (d.error || 'save failed'));
+                return d;
+            };
+
+            const handleSave = async () => {
+                setSaving(true);
+                setError('');
+                try {
+                    // Language + retention always persist
+                    await fetch('/api/settings/language', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ language }),
+                    });
+                    await fetch('/api/settings/retention', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ retention_days: Number(retention) }),
+                    });
+                    await fetch('/api/settings/grammar-correction', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: grammarEnabled }),
+                    });
+                    // Save only providers the user actually entered (blank = keep existing)
+                    if (groqKey.trim()) await saveProvider('/api/settings/api-key', { api_key: groqKey.trim() }, 'Groq');
+                    if (openaiKey.trim()) await saveProvider('/api/settings/openai-key', { api_key: openaiKey.trim() }, 'OpenAI');
+                    if (bedrockKey.trim()) await saveProvider('/api/settings/bedrock', { bedrock_api_key: bedrockKey.trim() }, 'Bedrock');
+                    if (onSave) onSave();
+                    if (onClose) onClose();
+                } catch (e) {
+                    setError(e.message || 'Failed to save settings');
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            if (!isOpen) return null;
+
+            const card = isDarkMode ? 'bg-gray-900' : 'bg-white';
+            const labelCls = isDarkMode ? 'text-gray-300' : 'text-gray-700';
+            const subCls = isDarkMode ? 'text-gray-500' : 'text-gray-500';
+            const inputCls = `w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white focus:ring-gray-600' : 'bg-white border-gray-300 text-gray-900 focus:ring-blue-500'}`;
+            const testBtnCls = `text-xs px-3 py-1.5 rounded-lg border ${isDarkMode ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-300 text-gray-700 hover:bg-gray-100'}`;
+
+            const Badge = ({ provider }) => {
+                const t = testState[provider] || {};
+                if (t.status === 'testing') return <span className="text-xs px-2 py-1 rounded-full bg-gray-200 text-gray-700">Testing…</span>;
+                if (t.status === 'ok') return <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">✓ Connected</span>;
+                if (t.status === 'fail') return <span className="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">✗ Failed</span>;
+                if (configured[provider]) return <span className="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-700">● Saved</span>;
+                return <span className={`text-xs px-2 py-1 rounded-full ${isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-100 text-gray-500'}`}>Not configured</span>;
+            };
+
+            const TestMsg = ({ provider }) => {
+                const t = testState[provider] || {};
+                if (t.status === 'fail' && t.msg) return <p className={`text-xs mt-1 ${isDarkMode ? 'text-red-400' : 'text-red-500'}`}>{t.msg}</p>;
+                if (t.status === 'ok') return <p className="text-xs mt-1 text-green-600">Connection OK</p>;
+                return null;
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 backdrop-blur-sm p-4">
+                    <div className={`rounded-xl p-6 max-w-lg w-full shadow-2xl max-h-[85vh] overflow-y-auto ${card}`}>
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>⚙️ Settings</h2>
+                            <button onClick={onClose} className={`transition-colors ${isDarkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}>✕</button>
+                        </div>
+
+                        {/* API PROVIDER — pick one (#4), show only its fields */}
+                        <div className="mb-4">
+                            <label className={`block text-sm font-semibold mb-1 ${labelCls}`}>API Provider <span className="font-normal text-red-500">(Required)</span></label>
+                            <select value={provider} onChange={(e) => setProvider(e.target.value)} className={inputCls}>
+                                <option value="groq">Groq (Recommended)</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="bedrock">AWS Bedrock</option>
+                            </select>
+                        </div>
+
+                        {provider === 'groq' && (
+                            <div className="mb-5">
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className={`text-sm font-semibold ${labelCls}`}>Groq API Key <span className="font-normal text-red-500">(Required)</span></label>
+                                    <Badge provider="groq" />
+                                </div>
+                                {configured.groq && previews.groq && (
+                                    <p className={`text-xs mb-1 font-mono ${subCls}`}>Saved key: {previews.groq}</p>
+                                )}
+                                <input type="password" value={groqKey} onChange={(e) => setGroqKey(e.target.value)} className={inputCls} placeholder={configured.groq ? 'Enter a new key to replace' : 'gsk_...'} />
+                                <div className="flex items-center justify-between mt-1">
+                                    <p className={`text-xs ${subCls}`}>From <a href="https://console.groq.com" target="_blank" className="hover:underline text-blue-500">console.groq.com</a></p>
+                                    <button onClick={() => testConnection('groq')} className={testBtnCls}>Test Connection</button>
+                                </div>
+                                <TestMsg provider="groq" />
+                            </div>
+                        )}
+
+                        {provider === 'openai' && (
+                            <div className="mb-5">
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className={`text-sm font-semibold ${labelCls}`}>OpenAI API Key</label>
+                                    <Badge provider="openai" />
+                                </div>
+                                {configured.openai && previews.openai && (
+                                    <p className={`text-xs mb-1 font-mono ${subCls}`}>Saved key: {previews.openai}</p>
+                                )}
+                                <input type="password" value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} className={inputCls} placeholder={configured.openai ? 'Enter a new key to replace' : 'sk-...'} />
+                                <div className="flex items-center justify-between mt-1">
+                                    <p className={`text-xs ${subCls}`}>From <a href="https://platform.openai.com/api-keys" target="_blank" className="hover:underline text-blue-500">platform.openai.com</a></p>
+                                    <button onClick={() => testConnection('openai')} className={testBtnCls}>Test Connection</button>
+                                </div>
+                                <TestMsg provider="openai" />
+                            </div>
+                        )}
+
+                        {provider === 'bedrock' && (
+                            <div className="mb-5">
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className={`text-sm font-semibold ${labelCls}`}>AWS Bedrock API Key</label>
+                                    <Badge provider="bedrock" />
+                                </div>
+                                {configured.bedrock && previews.bedrock && (
+                                    <p className={`text-xs mb-1 font-mono ${subCls}`}>Saved key: {previews.bedrock}</p>
+                                )}
+                                <input type="password" value={bedrockKey} onChange={(e) => setBedrockKey(e.target.value)} className={inputCls} placeholder={configured.bedrock ? 'Enter a new key to replace' : 'AWS Bedrock API key'} />
+                                <div className="flex items-center justify-end mt-1">
+                                    <button onClick={() => testConnection('bedrock')} className={testBtnCls}>Test Connection</button>
+                                </div>
+                                <TestMsg provider="bedrock" />
+                            </div>
+                        )}
+
+                        <hr className={isDarkMode ? 'border-gray-800 mb-5' : 'border-gray-200 mb-5'} />
+
+                        {/* LANGUAGE */}
+                        <div className="mb-5">
+                            <label className={`block text-sm font-semibold mb-1 ${labelCls}`}>Transcription Language</label>
+                            <select value={language} onChange={(e) => setLanguage(e.target.value)} className={inputCls}>
+                                <option value="auto">Auto-detect</option>
+                                <option value="en">English</option>
+                                <option value="es">Spanish</option>
+                                <option value="fr">French</option>
+                                <option value="de">German</option>
+                                <option value="hi">Hindi</option>
+                                <option value="zh">Chinese</option>
+                                <option value="ja">Japanese</option>
+                                <option value="pt">Portuguese</option>
+                                <option value="ru">Russian</option>
+                                <option value="it">Italian</option>
+                                <option value="ar">Arabic</option>
+                            </select>
+                        </div>
+
+                        {/* GRAMMAR CORRECTION — AWS Bedrock only */}
+                        <div className="mb-5">
+                            <div className="flex items-center justify-between">
+                                <label className={`text-sm font-semibold ${labelCls}`}>Grammar Correction</label>
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={grammarEnabled}
+                                    onClick={() => setGrammarEnabled(!grammarEnabled)}
+                                    className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors focus:outline-none ${grammarEnabled ? 'bg-blue-600' : (isDarkMode ? 'bg-gray-600' : 'bg-gray-300')}`}
+                                >
+                                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-0.5 ${grammarEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                                </button>
+                            </div>
+                            <p className={`text-xs mt-1 ${subCls}`}>
+                                Cleans up grammar and structures list-like speech into bullets.
+                                Powered by AWS Bedrock (Amazon Nova) — it runs on <strong>your</strong> AWS
+                                account, so Bedrock charges appear on your AWS bill. Transcription is
+                                unaffected and always uses Groq.
+                            </p>
+                            {grammarEnabled && !configured.bedrock && (
+                                <p className={`text-xs mt-2 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
+                                    ⚠️ No AWS Bedrock API key saved — transcripts will be left uncorrected.
+                                    Add one under API Provider → AWS Bedrock below.
+                                </p>
+                            )}
+                        </div>
+
+                        {/* RETENTION */}
+                        <div className="mb-6">
+                            <label className={`block text-sm font-semibold mb-1 ${labelCls}`}>Keep history for (days)</label>
+                            <input type="number" min="0" value={retention} onChange={(e) => setRetention(e.target.value)} className={inputCls} />
+                            <p className={`text-xs mt-1 ${subCls}`}>0 = keep forever. Older transcripts are deleted automatically.</p>
+                        </div>
+
+                        {/* APPEARANCE — theme toggle (persisted via localStorage in App) */}
+                        {onToggleTheme && (
+                            <div className="mb-6 flex items-center justify-between">
+                                <div>
+                                    <p className={`text-sm font-semibold ${labelCls}`}>Appearance</p>
+                                    <p className={`text-xs ${subCls}`}>Choose dark or light theme for the dashboard.</p>
+                                </div>
+                                <div className={`inline-flex rounded-lg overflow-hidden border ${isDarkMode ? 'border-gray-700' : 'border-gray-300'}`}>
+                                    <button
+                                        onClick={() => { if (isDarkMode) onToggleTheme(); }}
+                                        className={`px-3 py-1.5 text-xs font-medium transition-colors ${!isDarkMode ? 'bg-indigo-500 text-white' : (isDarkMode ? 'bg-gray-800 text-gray-400 hover:bg-gray-700' : 'bg-white text-gray-600')}`}
+                                    >☀️ Light</button>
+                                    <button
+                                        onClick={() => { if (!isDarkMode) onToggleTheme(); }}
+                                        className={`px-3 py-1.5 text-xs font-medium transition-colors ${isDarkMode ? 'bg-indigo-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-100'}`}
+                                    >🌙 Dark</button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* AUTO-START */}
+                        {hasElectron && (
+                            <div className="mb-6 flex items-center justify-between">
+                                <div>
+                                    <p className={`text-sm font-semibold ${labelCls}`}>Start on login</p>
+                                    <p className={`text-xs ${subCls}`}>Launch Echo automatically when you log in.</p>
+                                </div>
+                                <button
+                                    onClick={toggleAutoStart}
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${autoStart ? 'bg-indigo-500' : (isDarkMode ? 'bg-gray-700' : 'bg-gray-300')}`}
+                                >
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoStart ? 'translate-x-6' : 'translate-x-1'}`} />
+                                </button>
+                            </div>
+                        )}
+
+                        {/* ACCOUNT */}
+                        {hasElectron && (
+                            <div className={`mb-6 pt-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>
+                                <p className={`text-sm font-semibold mb-1 ${labelCls}`}>Account</p>
+                                <p className={`text-xs mb-3 ${subCls}`}>
+                                    {accountEmail ? ('Signed in as ' + accountEmail) : 'Not signed in'}
+                                </p>
+                                <div className="flex gap-2">
+                                    {accountEmail ? (
+                                        <button onClick={handleLogout}
+                                                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500 bg-opacity-10 text-red-500 hover:bg-opacity-20 transition-colors">
+                                            Log out
+                                        </button>
+                                    ) : (
+                                        <button onClick={() => window.electron.ipcRenderer.send('auth-logout')}
+                                                className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-500 text-white hover:bg-indigo-600 transition-colors">
+                                            Sign in
+                                        </button>
+                                    )}
+                                    <button onClick={handleQuit}
+                                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${isDarkMode ? 'bg-gray-800 text-gray-300 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                                        Quit Echo
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {error && (
+                            <p className={`text-sm mb-3 flex items-center gap-1 ${isDarkMode ? 'text-red-400' : 'text-red-500'}`}><span>⚠️</span> {error}</p>
+                        )}
+
+                        <div className="flex items-center justify-between">
+                            {appVersion ? (
+                                <span className={`text-xs ${isDarkMode ? 'text-gray-600' : 'text-gray-400'}`}>Echo v{appVersion}</span>
+                            ) : <span />}
+                            <div className="flex gap-3">
+                                <button onClick={onClose} className={`px-6 py-2 font-medium ${isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-800'}`}>Cancel</button>
+                                <button onClick={handleSave} disabled={saving} className={`px-6 py-2 rounded-lg font-medium disabled:opacity-50 ${isDarkMode ? 'bg-gray-800 text-white hover:bg-gray-700' : 'bg-gray-900 text-white hover:bg-gray-800'}`}>{saving ? 'Saving...' : 'Save'}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Toast Component
+        function Toast({ message, type, onClose }) {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 3000);
+                return () => clearTimeout(timer);
+            }, [onClose]);
+
+            const bgColor = type === 'success' ? 'bg-green-500' : 'bg-red-500';
+            const icon = type === 'success' ? '✓' : '⚠️';
+            
+            return (
+                <div className={`fixed bottom-6 right-6 ${bgColor} text-white px-6 py-4 rounded-lg shadow-2xl z-50 slide-up flex items-center gap-3`}>
+                    <span className="text-xl">{icon}</span>
+                    <span className="font-medium">{message}</span>
+                </div>
+            );
+        }
+
+        // Minimalistic Pill Component with Mic & Model Selector
+        function Pill() {
+            const [state, setState] = useState('idle'); // idle | recording | processing | success | error
+            const [statusMessage, setStatusMessage] = useState(''); // message from main (BUG-07)
+            const [model, setModel] = useState('whisper-large-v3-turbo');
+            const [selectedMic, setSelectedMic] = useState('');
+            const [devices, setDevices] = useState([]);
+            const [isExpanded, setIsExpanded] = useState(false);
+            const [isHovered, setIsHovered] = useState(false);
+            const [isFullyExpanded, setIsFullyExpanded] = useState(false);
+            const [showMenu, setShowMenu] = useState(false);
+            const [recordingTime, setRecordingTime] = useState(0);
+            const [nearLimit, setNearLimit] = useState(false);  // #9 — near the 10-min cap
+            const mediaRecorderRef = useRef(null);
+            const audioChunksRef = useRef([]);
+            const streamRef = useRef(null);
+            const inactivityTimerRef = useRef(null);
+            const recordingIdRef = useRef(0);
+            const stateRef = useRef(state);
+            const selectedMicRef = useRef(selectedMic);
+            const modelRef = useRef(model);
+            
+            // Keep refs in sync with state
+            useEffect(() => {
+                stateRef.current = state;
+            }, [state]);
+            
+            useEffect(() => {
+                selectedMicRef.current = selectedMic;
+            }, [selectedMic]);
+            
+            useEffect(() => {
+                modelRef.current = model;
+                if (window.electron?.ipcRenderer) {
+                    window.electron.ipcRenderer.send('set-model', model); // BUG-04
+                }
+            }, [model]);
+
+            // (removed) global window.__pillSet* setters - main now drives all pill
+            // state through the single 'pill-state' IPC channel (Phase 1 / D7).
+
+            useEffect(() => {
+                // Pill window: force transparent background for the rounded pill look
+                document.documentElement.classList.add('pill-mode');
+                document.documentElement.style.background = 'transparent';
+                document.body.classList.add('pill-mode');
+                document.body.style.background = 'transparent';
+                document.body.style.backgroundColor = 'transparent';
+                const root = document.getElementById('root');
+                if (root) {
+                    root.style.background = 'transparent';
+                    root.style.backgroundColor = 'transparent';
+                }
+                loadDevices();
+
+                return () => {
+                    document.documentElement.classList.remove('pill-mode');
+                    document.documentElement.style.background = '';
+                    document.body.classList.remove('pill-mode');
+                    document.body.style.background = '';
+                    document.body.style.backgroundColor = '';
+                    const r = document.getElementById('root');
+                    if (r) {
+                        r.style.background = '';
+                        r.style.backgroundColor = '';
+                    }
+                    cleanupRecording();
+                    if (inactivityTimerRef.current) {
+                        clearTimeout(inactivityTimerRef.current);
+                    }
+                };
+            }, []);
+
+            // Single state channel: main is the source of truth (Phase 1 / D7 / BUG-22).
+            useEffect(() => {
+                if (!window.electron?.ipcRenderer) return;
+
+                const handlePillState = (payload) => {
+                    if (!payload || !payload.state) return;
+                    // Drop stale-session updates, but always honor idle (reset/cancel)
+                    if (payload.recordingId &&
+                        payload.recordingId < recordingIdRef.current &&
+                        payload.state !== 'idle') {
+                        return;
+                    }
+                    if (payload.recordingId) recordingIdRef.current = payload.recordingId;
+                    if (typeof payload.recordingTime === 'number') setRecordingTime(payload.recordingTime);
+                    // #9 — only meaningful while recording; clears on any other state
+                    setNearLimit(payload.state === 'recording' && !!payload.nearLimit);
+                    setStatusMessage(payload.message || '');
+                    setState(payload.state);
+                    if (payload.state === 'recording' || payload.state === 'processing') {
+                        setIsExpanded(true);
+                    }
+                };
+
+                window.electron.ipcRenderer.on('pill-state', handlePillState);
+                // Push current model and ask main for current state (covers pill reload)
+                window.electron.ipcRenderer.send('set-model', modelRef.current);
+                window.electron.ipcRenderer.send('request-pill-state');
+
+                return () => {
+                    window.electron.ipcRenderer.removeListener('pill-state', handlePillState);
+                };
+            }, []);
+
+            // Browser MediaRecorder fallback: main sends browser-record-start/stop when
+            // SoX is not installed (Windows). Uses the same refs as the click-to-record path.
+            useEffect(() => {
+                if (!window.electron?.ipcRenderer) return;
+
+                const handleStart = async () => {
+                    try {
+                        const constraints = { audio: selectedMicRef.current ? { deviceId: { exact: selectedMicRef.current } } : true };
+                        audioChunksRef.current = [];
+                        streamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
+                        mediaRecorderRef.current = new MediaRecorder(streamRef.current);
+                        mediaRecorderRef.current.ondataavailable = (e) => {
+                            if (e.data.size > 0) audioChunksRef.current.push(e.data);
+                        };
+                        mediaRecorderRef.current.start();
+                    } catch (err) {
+                        console.error('[BrowserRec] Start failed:', err);
+                        window.electron.ipcRenderer.send('transcription-complete', { error: 'Microphone unavailable — allow mic access in Windows Settings' });
+                    }
+                };
+
+                const handleStop = (data) => {
+                    const cancel = data && data.cancel;
+                    const recorder = mediaRecorderRef.current;
+                    if (!recorder || recorder.state === 'inactive') {
+                        if (!cancel) window.electron.ipcRenderer.send('transcription-complete', '');
+                        return;
+                    }
+                    recorder.onstop = async () => {
+                        if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+                        const chunks = audioChunksRef.current.slice();
+                        audioChunksRef.current = [];
+                        mediaRecorderRef.current = null;
+                        if (cancel || chunks.length === 0) {
+                            if (!cancel) window.electron.ipcRenderer.send('transcription-complete', { error: 'No speech detected' });
+                            return;
+                        }
+                        try {
+                            const blob = new Blob(chunks, { type: 'audio/webm' });
+                            const fd = new FormData();
+                            fd.append('audio', blob, 'recording.webm');
+                            const port = window.location.port || 8081;
+                            const resp = await authedFetch(`http://127.0.0.1:${port}/api/transcribe`, { method: 'POST', body: fd });
+                            const result = await resp.json();
+                            if (result.success && result.text) {
+                                window.electron.ipcRenderer.send('transcription-complete', { text: result.text });
+                            } else {
+                                // Surface the real backend reason (e.g. "API key not set") instead of "No speech detected"
+                                window.electron.ipcRenderer.send('transcription-complete', { error: result.error || 'Transcription failed' });
+                            }
+                        } catch (err) {
+                            console.error('[BrowserRec] Transcribe failed:', err);
+                            window.electron.ipcRenderer.send('transcription-complete', { error: 'Could not reach the transcription server' });
+                        }
+                    };
+                    recorder.stop();
+                };
+
+                window.electron.ipcRenderer.on('browser-record-start', handleStart);
+                window.electron.ipcRenderer.on('browser-record-stop', handleStop);
+                return () => {
+                    window.electron.ipcRenderer.removeListener('browser-record-start', handleStart);
+                    window.electron.ipcRenderer.removeListener('browser-record-stop', handleStop);
+                };
+            }, []);
+
+            // Local recording clock for the browser fallback only.
+            // In Electron, main owns the clock and pushes recordingTime via 'pill-state'.
+            useEffect(() => {
+                if (window.electron?.ipcRenderer) return;
+                if (state !== 'recording') return;
+                setRecordingTime(0);
+                const id = setInterval(() => setRecordingTime(t => t + 1), 1000);
+                return () => clearInterval(id);
+            }, [state]);
+
+            // Auto-reset to idle after a terminal state. ONE timer, cleaned up on any
+            // state change so a stale reset can never clobber a newer recording
+            // (double-reset guard). Paste-failed success lingers longer so the
+            // "press ⌘V" hint is readable (BUG-05).
+            useEffect(() => {
+                if (state !== 'success' && state !== 'error') return;
+                // Compute paste-failure inline — the shared `pasteFailed` const is declared
+                // later in the component, and a dep array is evaluated during render (would
+                // hit the temporal dead zone).
+                const pasteFail = state === 'success' && !!statusMessage && statusMessage !== 'Copied!';
+                const delay = state === 'error' ? 2000 : (pasteFail ? 2800 : 1500);
+                const timer = setTimeout(() => {
+                    setState('idle');
+                    setIsExpanded(false);
+                    setIsFullyExpanded(false);
+                    setRecordingTime(0);
+                }, delay);
+                return () => clearTimeout(timer);
+            }, [state, statusMessage]);
+
+            // Auto-collapse after 10 seconds of inactivity
+            useEffect(() => {
+                if (isExpanded && state === 'idle') {
+                    resetInactivityTimer();
+                }
+                return () => {
+                    if (inactivityTimerRef.current) {
+                        clearTimeout(inactivityTimerRef.current);
+                    }
+                };
+            }, [isExpanded, state]);
+
+            const resetInactivityTimer = () => {
+                if (inactivityTimerRef.current) {
+                    clearTimeout(inactivityTimerRef.current);
+                }
+                
+                // Auto-collapse after 10 seconds when expanded and idle
+                if (isExpanded && state === 'idle') {
+                    inactivityTimerRef.current = setTimeout(() => {
+                        setIsExpanded(false);
+                        // setShowModelMenu was removed - no longer needed
+                    }, 10000); // 10 seconds
+                }
+            };
+
+            // (removed) get-recording-status effect - replaced by 'request-pill-state'
+            // in the single state-channel effect above (Phase 1).
+
+            useEffect(() => {
+                // Notify Electron about size changes
+                console.log('[Pill Size] State changed:', { isExpanded, isFullyExpanded, state });
+                if (window.electron?.ipcRenderer) {
+                    if (isFullyExpanded && state === 'idle') {
+                        // Fully expanded state with input selector
+                        console.log('[Pill Size] Sending pill-expand with width 350');
+                        window.electron.ipcRenderer.send('pill-expand', 350);
+                    } else if (!isExpanded && !isFullyExpanded && state === 'idle') {
+                        console.log('[Pill Size] Sending pill-compact');
+                        window.electron.ipcRenderer.send('pill-compact');
+                    } else if (state === 'recording' || state === 'processing') {
+                        console.log('[Pill Size] Sending pill-expand with width 130 (recording/processing)');
+                        window.electron.ipcRenderer.send('pill-expand', 130);
+                    } else if (state === 'error') {
+                        // Wider so the real error message is readable (BUG-07)
+                        window.electron.ipcRenderer.send('pill-expand', 260);
+                    } else if (state === 'success') {
+                        // Wider when auto-paste failed and we show "press ⌘V" (BUG-05)
+                        const w = (statusMessage && statusMessage !== 'Copied!') ? 260 : 130;
+                        window.electron.ipcRenderer.send('pill-expand', w);
+                    } else if (isExpanded && state === 'idle') {
+                        console.log('[Pill Size] Sending pill-expand with width 130 (expanded idle)');
+                        window.electron.ipcRenderer.send('pill-expand', 130);
+                    }
+                }
+            }, [isExpanded, isFullyExpanded, state, statusMessage]);
+
+            const loadDevices = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    const deviceList = await navigator.mediaDevices.enumerateDevices();
+                    const audioInputs = deviceList
+                        .filter(device => device.kind === 'audioinput')
+                        .map(device => ({
+                            deviceId: device.deviceId,
+                            label: device.label.replace(/\s*\(.*?\)\s*/g, '').trim() || `Microphone ${device.deviceId.slice(0, 5)}`
+                        }));
+                    
+                    setDevices(audioInputs);
+                    if (audioInputs.length > 0 && !selectedMic) {
+                        setSelectedMic(audioInputs[0].deviceId);
+                    }
+                } catch (err) {
+                    console.error('Error loading devices:', err);
+                }
+            };
+
+            const cleanupRecording = () => {
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+                if (mediaRecorderRef.current) {
+                    mediaRecorderRef.current = null;
+                }
+                audioChunksRef.current = [];
+            };
+
+            // Start recording. In Electron, main owns capture (SoX) and we just send
+            // the command; state arrives via 'pill-state'. Browser uses MediaRecorder.
+            const startRecording = async () => {
+                if (window.electron?.ipcRenderer) {
+                    window.electron.ipcRenderer.send('set-model', modelRef.current);
+                    window.electron.ipcRenderer.send('recording-start');
+                    return;
+                }
+                try {
+                    cleanupRecording();
+                    const constraints = {
+                        audio: selectedMic ? { deviceId: { exact: selectedMic } } : true
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    streamRef.current = stream;
+                    mediaRecorderRef.current = new MediaRecorder(stream);
+                    audioChunksRef.current = [];
+                    mediaRecorderRef.current.ondataavailable = (event) => {
+                        if (event.data && event.data.size > 0) {
+                            audioChunksRef.current.push(event.data);
+                        }
+                    };
+                    mediaRecorderRef.current.onstop = async () => {
+                        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                        await transcribeAudio(audioBlob);
+                        cleanupRecording();
+                    };
+                    mediaRecorderRef.current.start(10000);
+                    setState('recording');
+                    setRecordingTime(0);
+                } catch (error) {
+                    console.error('Error starting recording:', error);
+                    setStatusMessage('Mic error');
+                    setState('error');
+                    cleanupRecording();
+                }
+            };
+
+            const stopRecording = () => {
+                if (window.electron?.ipcRenderer) {
+                    window.electron.ipcRenderer.send('recording-stop');
+                    return;
+                }
+                if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+                    mediaRecorderRef.current.stop();
+                    setState('processing');
+                }
+            };
+
+            const transcribeAudio = async (audioBlob) => {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+                formData.append('model', model);
+
+                try {
+                    const response = await authedFetch('/api/transcribe', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        console.error('HTTP error:', response.status);
+                        setState('error');
+                        return;
+                    }
+
+                    const data = await response.json();
+
+                    if (data.success && data.text) {
+                        console.log('Transcription successful! Text:', data.text.substring(0, 50));
+                        await navigator.clipboard.writeText(data.text);
+                        console.log('Text copied to clipboard');
+                        // Trigger auto-paste via Electron (for regular button-triggered transcription too)
+                        if (window.electron?.ipcRenderer) {
+                            console.log('Sending transcription-complete IPC event...');
+                            window.electron.ipcRenderer.send('transcription-complete', data.text);
+                            console.log('IPC event sent!');
+                        } else {
+                            console.log('No electron IPC available');
+                        }
+                        setState('success');
+                    } else {
+                        console.error('Transcription failed:', data.error || 'Unknown error');
+                        setState('error');
+                    }
+                } catch (error) {
+                    console.error('Transcription error:', error);
+                    setState('error');
+                }
+            };
+
+            const handlePress = () => {
+                if (state === 'idle') {
+                    if (!isExpanded) {
+                        setIsExpanded(true);
+                        resetInactivityTimer();
+                    } else {
+                        startRecording();
+                        if (inactivityTimerRef.current) {
+                            clearTimeout(inactivityTimerRef.current);
+                        }
+                    }
+                } else if (state === 'recording') {
+                    stopRecording();
+                }
+            };
+
+            const handleContainerClick = () => {
+                if (!isExpanded && state === 'idle') {
+                    setIsExpanded(true);
+                    resetInactivityTimer();
+                }
+            };
+
+            const handleUserInteraction = () => {
+                if (isExpanded && state === 'idle') {
+                    resetInactivityTimer();
+                }
+            };
+            
+            
+            const openMainWindow = () => {
+                if (window.electron?.ipcRenderer) {
+                    window.electron.ipcRenderer.send('show-main-window');
+                }
+                handleUserInteraction();
+            };
+
+            const getButtonIcon = () => {
+                switch (state) {
+                    case 'recording':
+                        return (
+                            <svg viewBox="0 0 24 24" fill="white" stroke="white" strokeWidth="0">
+                                <rect x="7" y="7" width="10" height="10" rx="1"/>
+                            </svg>
+                        );
+                    case 'processing':
+                        return <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>;
+                    case 'success':
+                        return (
+                            <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+                                <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                        );
+                    case 'error':
+                        return (
+                            <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        );
+                    default:
+                        return (
+                            <svg viewBox="0 0 24 24" fill="white" stroke="white" strokeWidth="1.5">
+                                <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" fill="white"/>
+                                <path d="M19 11v1a7 7 0 0 1-14 0v-1" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                                <line x1="12" y1="19" x2="12" y2="22" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                            </svg>
+                        );
+                }
+            };
+
+            const getButtonStyle = () => {
+                switch (state) {
+                    case 'recording':
+                        return 'bg-red-600 bg-opacity-80 hover:bg-opacity-90';
+                    case 'processing':
+                        return 'bg-white bg-opacity-20';
+                    case 'success':
+                        return 'bg-white bg-opacity-20';
+                    case 'error':
+                        return 'bg-white bg-opacity-20';
+                    default:
+                        return 'bg-white bg-opacity-20 hover:bg-opacity-30';
+                }
+            };
+
+            const formatTime = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            // BUG-07: show the real error text, capped so it fits the pill.
+            const cap = (s, n = 40) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s);
+            // BUG-05: main sends 'Copied!' on success, or 'Copied — press ⌘V' if auto-paste failed.
+            const pasteFailed = state === 'success' && !!statusMessage && statusMessage !== 'Copied!';
+
+            const handleMinimize = () => {
+                setIsExpanded(false);
+                if (inactivityTimerRef.current) {
+                    clearTimeout(inactivityTimerRef.current);
+                }
+            };
+
+            const selectedDevice = devices.find(d => d.deviceId === selectedMic);
+            
+            // (hover / fullyExpanded / showMenu state moved to the top of the component - BUG-19)
+
+            // Handle hover state IPC for window resizing
+            useEffect(() => {
+                console.log('[Pill Hover] Hover state changed:', { isHovered, isExpanded, isFullyExpanded, state });
+                if (window.electron?.ipcRenderer) {
+                    // Only handle hover states when NOT fully expanded
+                    if (!isExpanded && !isFullyExpanded && state === 'idle') {
+                        if (isHovered) {
+                            console.log('[Pill Hover] Sending pill-hover-expand');
+                            window.electron.ipcRenderer.send('pill-hover-expand');
+                        } else {
+                            console.log('[Pill Hover] Sending pill-compact');
+                            window.electron.ipcRenderer.send('pill-compact');
+                        }
+                    }
+                }
+            }, [isHovered, isExpanded, isFullyExpanded, state]);
+
+            // Click handler for the pill - clicking anywhere starts recording
+            const handlePillClick = () => {
+                if (state === 'idle') {
+                    startRecording();
+                    setIsExpanded(true);
+                    setIsHovered(false);
+                }
+            };
+
+            // Determine the pill class based on state
+            const getPillClass = () => {
+                if (state === 'recording') return 'recording';
+                if (state === 'processing' || state === 'success' || state === 'error') return 'expanded';
+                if (isFullyExpanded && state === 'idle') return 'fully-expanded';
+                if (isHovered && !isExpanded && !isFullyExpanded) return 'hover-expanded';
+                return 'compact';
+            };
+
+            // Render content based on state
+            const renderContent = () => {
+                if (state === 'recording') {
+                    return (
+                        <div className="pill-recording-layout">
+                            <div className="pill-waveform">
+                                <LiveWaveform
+                                    active={true}
+                                    simulateAudio={false}
+                                    mode="static"
+                                    height={18}
+                                    barWidth={2}
+                                    barGap={2}
+                                    barColor="rgba(255, 255, 255, 0.8)"
+                                />
+                            </div>
+                            <span className="pill-time" style={nearLimit ? { color: '#f87171', fontWeight: 600 } : undefined}>{formatTime(recordingTime)}</span>
+                        </div>
+                    );
+                }
+
+                if (state === 'processing') {
+                    return (
+                        <div className="pill-inner-content">
+                            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                            <span className="pill-status-text">Transcribing...</span>
+                        </div>
+                    );
+                }
+                
+                if (state === 'success') {
+                    // BUG-05: amber "clipboard" state when auto-paste failed; green check otherwise.
+                    const color = pasteFailed ? '#fbbf24' : '#4ade80';
+                    return (
+                        <div className="pill-inner-content">
+                            {pasteFailed ? (
+                                <svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: '14px', height: '14px' }}>
+                                    <rect x="9" y="9" width="13" height="13" rx="2"/>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                </svg>
+                            ) : (
+                                <svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" style={{ width: '14px', height: '14px' }}>
+                                    <polyline points="20 6 9 17 4 12"/>
+                                </svg>
+                            )}
+                            <span className="pill-status-text" style={{ color }}>{cap(statusMessage || 'Copied!', 40)}</span>
+                        </div>
+                    );
+                }
+                
+                if (state === 'error') {
+                    return (
+                        <div className="pill-inner-content">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round" style={{ width: '14px', height: '14px' }}>
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                            <span className="pill-status-text" style={{ color: '#f87171' }}>{cap(statusMessage, 40) || 'Error'}</span>
+                        </div>
+                    );
+                }
+                
+                // Fully expanded state - shows input selector + minimize button
+                if (isFullyExpanded && state === 'idle') {
+                    return (
+                        <div className="pill-expanded-content">
+                             <button
+                                className="pill-mic-button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    startRecording();
+                                    setIsExpanded(true);
+                                    setIsHovered(false);
+                                }}
+                                title="Start Recording"
+                                style={{ width: '20px', height: '20px' }}
+                            >
+                                <svg viewBox="0 0 24 24" fill="white" stroke="white" strokeWidth="1.5">
+                                    <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" fill="white"/>
+                                    <path d="M19 11v1a7 7 0 0 1-14 0v-1" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                                    <line x1="12" y1="19" x2="12" y2="22" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                                </svg>
+                            </button>
+                            
+                            <select
+                                value={selectedMic}
+                                onChange={(e) => setSelectedMic(e.target.value)}
+                                className="pill-input-selector"
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ maxWidth: '150px' }}
+                            >
+                                {devices.map(device => (
+                                    <option key={device.deviceId} value={device.deviceId}>
+                                        {device.label}
+                                    </option>
+                                ))}
+                            </select>
+
+                            <button
+                                className="pill-menu-button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    openMainWindow();
+                                }}
+                                title="Open Dashboard"
+                                style={{ width: '20px', height: '20px' }}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeJoin="round">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                    <line x1="9" y1="3" x2="9" y2="21" />
+                                </svg>
+                            </button>
+
+                            <button
+                                className="pill-minimize-button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setIsFullyExpanded(false);
+                                    setIsHovered(false);
+                                }}
+                                title="Minimize"
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                                </svg>
+                            </button>
+
+                            {/* Close the pill = quit Echo. Bigger + red so it's a clear, hittable target. */}
+                            <button
+                                className="pill-close-button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (window.electron?.ipcRenderer) window.electron.ipcRenderer.send('app-quit');
+                                }}
+                                title="Quit Echo"
+                                style={{ marginLeft: '4px' }}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round">
+                                    <line x1="6" y1="6" x2="18" y2="18"/>
+                                    <line x1="6" y1="18" x2="18" y2="6"/>
+                                </svg>
+                            </button>
+                        </div>
+                    );
+                }
+                
+                // Hover-expanded state - shows mic button + three dots menu
+                if (isHovered && !isExpanded && !isFullyExpanded && state === 'idle') {
+                    return (
+                        <div className="pill-hover-content">
+                            <button
+                                className="pill-mic-button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    startRecording();
+                                    setIsExpanded(true);
+                                    setIsHovered(false);
+                                }}
+                                title="Start Recording"
+                            >
+                                <svg viewBox="0 0 24 24" fill="white" stroke="white" strokeWidth="1.5">
+                                    <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" fill="white"/>
+                                    <path d="M19 11v1a7 7 0 0 1-14 0v-1" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                                    <line x1="12" y1="19" x2="12" y2="22" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                                </svg>
+                            </button>
+                            <button
+                                className="pill-menu-button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    console.log('[Pill] Three-dots menu clicked, setting isFullyExpanded=true');
+                                    setIsFullyExpanded(true);
+                                    setIsHovered(false);
+                                    // Immediately send IPC to expand window
+                                    if (window.electron?.ipcRenderer) {
+                                        console.log('[Pill] Sending immediate pill-expand 350');
+                                        window.electron.ipcRenderer.send('pill-expand', 350);
+                                    }
+                                }}
+                                title="Settings"
+                            >
+                                <svg viewBox="0 0 24 24" fill="white">
+                                    <circle cx="12" cy="5" r="2"/>
+                                    <circle cx="12" cy="12" r="2"/>
+                                    <circle cx="12" cy="19" r="2"/>
+                                </svg>
+                            </button>
+                        </div>
+                    );
+                }
+                
+                // Compact state shows nothing
+                return null;
+            };
+
+            // Handle click based on state
+            const handleClick = () => {
+                // Only handle clicks for recording state (to stop recording)
+                if (state === 'recording') {
+                    stopRecording();
+                }
+                // For idle state, hover interactions handle everything
+            };
+
+            // Single pill that animates between all states
+            return (
+                <div className="pill-wrapper">
+                    <div
+                        className={`pill-container ${getPillClass()}`}
+                        onMouseEnter={() => state === 'idle' && !isFullyExpanded && setIsHovered(true)}
+                        onMouseLeave={() => !isFullyExpanded && setIsHovered(false)}
+                        onClick={handleClick}
+                        title={state === 'recording' ? 'Click to stop' : ''}
+                    >
+                        {renderContent()}
+                    </div>
+                </div>
+            );
+        }
+
+        // Main App Component
+        function App() {
+            const platform = (window.electron && window.electron.platform) || 'darwin';
+            const isMac = platform === 'darwin';
+            const [hasApiKey, setHasApiKey] = useState(false);
+            const [showSettings, setShowSettings] = useState(false);
+            const [isRecording, setIsRecording] = useState(false);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [currentText, setCurrentText] = useState('');
+            const [currentFilename, setCurrentFilename] = useState('');
+            const [history, setHistory] = useState([]);
+            const [selectedHistory, setSelectedHistory] = useState(null);
+            const [model, setModel] = useState('whisper-large-v3-turbo');
+            const [selectedMic, setSelectedMic] = useState('');
+            const [toast, setToast] = useState(null);
+            const [recordingTime, setRecordingTime] = useState(0);
+            const [copiedText, setCopiedText] = useState(false);
+            // Persisted theme preference — load saved choice, default to dark
+            // (matches Echo's branding) instead of starting in light then flashing.
+            const [isDarkMode, setIsDarkMode] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('echo_theme');
+                    if (saved === 'light') return false;
+                    if (saved === 'dark') return true;
+                } catch (_) {}
+                return true; // default dark
+            });
+            useEffect(() => {
+                try { localStorage.setItem('echo_theme', isDarkMode ? 'dark' : 'light'); } catch (_) {}
+            }, [isDarkMode]);
+            const [showOlderHistory, setShowOlderHistory] = useState(false);
+            const [historyFilter, setHistoryFilter] = useState('all');
+            const [showFeedback, setShowFeedback] = useState(false);
+            
+            const mediaRecorderRef = useRef(null);
+            const audioChunksRef = useRef([]);
+            const streamRef = useRef(null);
+            const timerRef = useRef(null);
+
+            useEffect(() => {
+                checkApiKey();
+                loadHistory();
+                // Best-effort usage ping (Tariq #3). No-ops server-side when
+                // analytics/cloud is unconfigured, so v1 behaviour is unchanged.
+                authedFetch('/api/event', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ event: 'app_open' })
+                }).catch(() => {});
+            }, []);
+
+            useEffect(() => {
+                if (isRecording) {
+                    timerRef.current = setInterval(() => {
+                        setRecordingTime(t => t + 1);
+                    }, 1000);
+                } else {
+                    setRecordingTime(0);
+                    if (timerRef.current) {
+                        clearInterval(timerRef.current);
+                    }
+                }
+                return () => {
+                    if (timerRef.current) {
+                        clearInterval(timerRef.current);
+                    }
+                };
+            }, [isRecording]);
+
+            const checkApiKey = async () => {
+                try {
+                    const response = await fetch('/api/settings/api-key');
+                    const data = await response.json();
+                    setHasApiKey(data.has_api_key);
+                    if (!data.has_api_key) {
+                        setShowSettings(true);
+                    }
+                } catch (err) {
+                    console.error('Error checking API key:', err);
+                }
+            };
+
+            const loadHistory = async () => {
+                try {
+                    const response = await authedFetch('/api/history');
+                    const data = await response.json();
+                    setHistory(data);
+                } catch (err) {
+                    console.error('Error loading history:', err);
+                }
+            };
+
+            const toggleRecording = async () => {
+                if (!hasApiKey) {
+                    setShowSettings(true);
+                    return;
+                }
+
+                if (!isRecording) {
+                    await startRecording();
+                } else {
+                    stopRecording();
+                }
+            };
+
+            const startRecording = async () => {
+                try {
+                    const constraints = {
+                        audio: selectedMic ? { deviceId: { exact: selectedMic } } : true
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    streamRef.current = stream;
+                    mediaRecorderRef.current = new MediaRecorder(stream);
+                    audioChunksRef.current = [];
+
+                    mediaRecorderRef.current.ondataavailable = (event) => {
+                        if (event.data && event.data.size > 0) {
+                            audioChunksRef.current.push(event.data);
+                        }
+                    };
+
+                    mediaRecorderRef.current.onstop = async () => {
+                        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                        console.log('Recording stopped. Blob size:', audioBlob.size, 'bytes');
+                        await transcribeAudio(audioBlob);
+                    };
+
+                    // Request data every 10 seconds to prevent chunking issues
+                    mediaRecorderRef.current.start(10000);
+                    setIsRecording(true);
+                    setCurrentText('');
+                    setCurrentFilename('');
+                    setSelectedHistory(null);
+                } catch (error) {
+                    setToast({ message: 'Error accessing microphone: ' + error.message, type: 'error' });
+                }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorderRef.current && isRecording) {
+                    mediaRecorderRef.current.stop();
+                    streamRef.current?.getTracks().forEach(track => track.stop());
+                    setIsRecording(false);
+                    setIsProcessing(true);
+                }
+            };
+
+            const transcribeAudio = async (audioBlob) => {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+                formData.append('model', model);
+
+                try {
+                    const response = await authedFetch('/api/transcribe', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        setCurrentText(data.text);
+                        setCurrentFilename(data.filename || '');
+                        setToast({ message: 'Transcription complete!', type: 'success' });
+                        loadHistory();
+                    } else {
+                        throw new Error(data.error || 'Transcription failed');
+                    }
+                } catch (error) {
+                    setToast({ message: 'Error: ' + error.message, type: 'error' });
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            // Re-transcribe the last recording on the server without re-recording.
+            const retryLast = async () => {
+                setIsProcessing(true);
+                try {
+                    const response = await authedFetch('/api/retry', { method: 'POST' });
+                    const data = await response.json();
+                    if (data.success) {
+                        setSelectedHistory(null);
+                        setCurrentText(data.text);
+                        setToast({ message: 'Re-transcribed!', type: 'success' });
+                        loadHistory();
+                    } else {
+                        throw new Error(data.error || 'Retry failed');
+                    }
+                } catch (error) {
+                    setToast({ message: 'Retry: ' + error.message, type: 'error' });
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const copyText = (text) => {
+                navigator.clipboard.writeText(text).then(() => {
+                    setCopiedText(true);
+                    setToast({ message: 'Copied to clipboard!', type: 'success' });
+                    setTimeout(() => setCopiedText(false), 2000);
+                });
+            };
+
+            const formatTime = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            const formatTimestamp = (timestamp) => {
+                const date = new Date(
+                    timestamp.substring(0, 4),
+                    timestamp.substring(4, 6) - 1,
+                    timestamp.substring(6, 8),
+                    timestamp.substring(9, 11),
+                    timestamp.substring(11, 13),
+                    timestamp.substring(13, 15)
+                );
+                
+                const now = new Date();
+                const diffMs = now - date;
+                const diffMins = Math.floor(diffMs / 60000);
+                const diffHours = Math.floor(diffMs / 3600000);
+                const diffDays = Math.floor(diffMs / 86400000);
+                
+                if (diffMins < 60) return `${diffMins} min ago`;
+                if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+                if (diffDays === 1) return 'Yesterday';
+                if (diffDays < 7) return `${diffDays} days ago`;
+                return date.toLocaleDateString();
+            };
+
+            const parseTimestamp = (ts) => {
+                if (!ts || ts.length < 15) return new Date(0);
+                return new Date(
+                    ts.substring(0,4), ts.substring(4,6)-1, ts.substring(6,8),
+                    ts.substring(9,11), ts.substring(11,13), ts.substring(13,15)
+                );
+            };
+
+            // #3: always sort newest-first (timestamps are YYYYMMDD_HHMMSS, so string
+            // compare = chronological). #7: filter by time window (minutes / today / all).
+            const filteredHistory = (() => {
+                const sorted = [...history].sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+                if (historyFilter === 'all') return sorted;
+                const now = new Date();
+                let cutoff;
+                if (historyFilter === 'today') {
+                    cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                } else {
+                    cutoff = new Date(now.getTime() - parseInt(historyFilter, 10) * 60000); // N minutes ago
+                }
+                return sorted.filter(item => parseTimestamp(item.timestamp) >= cutoff);
+            })();
+
+            return (
+                <div className={`h-screen w-screen flex flex-col overflow-hidden ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
+
+                    {/* ── Title bar ── */}
+                    <div
+                        className={`flex items-center justify-between px-4 h-10 border-b flex-shrink-0 ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}
+                        // #2: on macOS the traffic-light buttons sit top-left, so pad the
+                        // logo to the right so they don't overlap it.
+                        style={{ WebkitAppRegion: 'drag', WebkitUserSelect: 'none',
+                                 paddingLeft: (window.electron && window.electron.platform === 'darwin') ? '78px' : undefined }}
+                    >
+                        <span className={`flex items-center gap-2 text-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                            Echo
+                        </span>
+                        <button
+                            onClick={() => setIsDarkMode(!isDarkMode)}
+                            className={`text-base transition-colors ${isDarkMode ? 'text-yellow-400 hover:text-yellow-300' : 'text-gray-400 hover:text-gray-600'}`}
+                            style={{ WebkitAppRegion: 'no-drag' }}
+                            title="Toggle dark / light mode"
+                        >
+                            {isDarkMode ? '☀️' : '🌙'}
+                        </button>
+                    </div>
+
+                    {/* ── Two-panel body ── */}
+                    <div className="flex flex-1 overflow-hidden">
+
+                        {/* ── Left sidebar ── */}
+                        <div className={`w-80 flex-shrink-0 flex flex-col border-r ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+
+                            {/* Logo + buttons */}
+                            <div className="px-5 pt-6 pb-4 flex-shrink-0">
+                                <div className="flex items-center gap-3 mb-6">
+                                    <EchoLogo size={44} />
+                                    <div>
+                                        <h1 className="text-xl font-bold leading-tight">Echo</h1>
+                                        <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Speech to Text</p>
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={() => { setSelectedHistory(null); toggleRecording(); }}
+                                    disabled={!hasApiKey || isProcessing}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed mb-2"
+                                    style={{ backgroundColor: isRecording ? '#dc2626' : (isDarkMode ? '#27272a' : '#0f172a') }}
+                                >
+                                    {isRecording ? '⏹ Stop Recording' : isProcessing ? '⌛ Processing…' : '+ New Recording'}
+                                </button>
+
+                                <button
+                                    onClick={() => setShowSettings(true)}
+                                    className={`w-full flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${isDarkMode ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
+                                >
+                                    ⚙️ Settings
+                                </button>
+
+                                <button
+                                    onClick={() => setShowFeedback(true)}
+                                    className={`w-full flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${isDarkMode ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
+                                >
+                                    💬 Feedback
+                                </button>
+
+                                {!hasApiKey && (
+                                    <div className={`mt-3 px-3 py-2 rounded-lg text-xs ${isDarkMode ? 'bg-yellow-900 bg-opacity-30 text-yellow-400' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
+                                        ⚠️ Add your Groq API key in Settings to get started.
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Recordings list */}
+                            <div className={`border-t flex-1 flex flex-col overflow-hidden ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                                <div className="px-3 pt-3 pb-1">
+                                    <select
+                                        value={historyFilter}
+                                        onChange={(e) => setHistoryFilter(e.target.value)}
+                                        className={`w-full text-xs rounded-lg border px-2 py-1.5 outline-none cursor-pointer ${isDarkMode ? 'bg-gray-800 border-gray-700 text-gray-300' : 'bg-white border-gray-200 text-gray-600'}`}
+                                    >
+                                        <option value="all">All time</option>
+                                        <option value="today">Today</option>
+                                        <option value="300">Last 5 hours</option>
+                                        <option value="60">Last 1 hour</option>
+                                        <option value="30">Last 30 minutes</option>
+                                        <option value="10">Last 10 minutes</option>
+                                        <option value="5">Last 5 minutes</option>
+                                        <option value="1">Last 1 minute</option>
+                                    </select>
+                                </div>
+                                {filteredHistory.length === 0 ? (
+                                    <p className={`px-5 py-6 text-xs text-center ${isDarkMode ? 'text-gray-600' : 'text-gray-400'}`}>No recordings in this range</p>
+                                ) : (
+                                    <div className="px-3 pb-4 space-y-1 overflow-y-auto flex-1">
+                                        {filteredHistory.map((item, i) => (
+                                            <div
+                                                key={item.timestamp + '-' + i}
+                                                onClick={() => { setSelectedHistory(item); setCurrentText(''); }}
+                                                className={`group rounded-xl px-3 py-2.5 cursor-pointer transition-colors border ${
+                                                    selectedHistory?.timestamp === item.timestamp
+                                                        ? (isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-blue-50 border-blue-200')
+                                                        : (isDarkMode ? 'border-transparent hover:bg-gray-800 hover:border-gray-700' : 'border-transparent hover:bg-gray-50 hover:border-gray-200')
+                                                }`}
+                                            >
+                                                <div className="flex items-center justify-between mb-0.5">
+                                                    <span className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>{formatTimestamp(item.timestamp)}</span>
+                                                    <span className="text-xs text-amber-500">⚡</span>
+                                                </div>
+                                                <p
+                                                    className={`text-xs leading-snug ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}
+                                                    style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                                                >
+                                                    {item.text}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* ── Right panel ── */}
+                        <div className={`flex-1 flex flex-col overflow-hidden ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`}>
+
+                            {/* Panel top bar: title + mic/model selectors */}
+                            <div className={`flex items-center justify-between px-6 py-3 border-b flex-shrink-0 ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>
+                                <span className={`text-sm font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                                    {isRecording ? `🔴 Recording · ${formatTime(recordingTime)}` : isProcessing ? '⌛ Transcribing…' : selectedHistory ? 'Recording' : 'New Recording'}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    <MicSelector
+                                        value={selectedMic}
+                                        onValueChange={setSelectedMic}
+                                        disabled={isRecording || isProcessing}
+                                        isDarkMode={isDarkMode}
+                                    />
+                                    <select
+                                        value={model}
+                                        onChange={(e) => setModel(e.target.value)}
+                                        disabled={isRecording || isProcessing}
+                                        className={`px-3 py-2 border rounded-lg text-sm font-medium focus:outline-none focus:ring-2 disabled:opacity-50 ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white focus:ring-gray-600' : 'bg-white border-gray-300 text-gray-900 focus:ring-blue-500'}`}
+                                    >
+                                        <option value="whisper-large-v3-turbo">⚡ Turbo (v3-turbo)</option>
+                                        <option value="whisper-large-v3">🎯 Large (v3)</option>
+                                        <option value="distil-whisper-large-v3-en">🚀 Distil EN</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* Panel body */}
+                            <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
+                                {(selectedHistory || (currentText && !isRecording && !isProcessing)) ? (
+                                    /* Transcript view */
+                                    <div className="w-full max-w-2xl">
+                                        <div className={`relative rounded-xl border p-6 ${isDarkMode ? 'border-gray-800 bg-gray-800' : 'border-gray-100 bg-gray-50'}`}>
+                                            {/* #8: Retry at the TOP-RIGHT corner of the transcription */}
+                                            {!selectedHistory && currentText && (
+                                                <button
+                                                    onClick={retryLast}
+                                                    disabled={isProcessing}
+                                                    title="Re-transcribe the last recording without recording again"
+                                                    className={`absolute top-3 right-3 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${isDarkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                                                >
+                                                    🔄 Retry
+                                                </button>
+                                            )}
+                                            <p className={`text-sm leading-relaxed whitespace-pre-wrap pr-20 ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
+                                                {selectedHistory ? selectedHistory.text : currentText}
+                                            </p>
+                                            <div className="flex items-center justify-between mt-5">
+                                                <span className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                                    {selectedHistory ? formatTimestamp(selectedHistory.timestamp) : 'Just now'}
+                                                </span>
+                                                <button
+                                                    onClick={() => copyText(selectedHistory ? selectedHistory.text : currentText)}
+                                                    className={`text-xs px-4 py-1.5 rounded-lg font-medium transition-colors ${isDarkMode ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                                                >
+                                                    {copiedText ? '✓ Copied' : 'Copy Text'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {selectedHistory && (
+                                            <button
+                                                onClick={() => setSelectedHistory(null)}
+                                                className={`mt-3 text-xs ${isDarkMode ? 'text-gray-500 hover:text-gray-400' : 'text-gray-400 hover:text-gray-600'}`}
+                                            >
+                                                ← New Recording
+                                            </button>
+                                        )}
+                                    </div>
+                                ) : (
+                                    /* Idle / recording — big mic button */
+                                    <div className="text-center">
+                                        <button
+                                            onClick={toggleRecording}
+                                            disabled={!hasApiKey || isProcessing}
+                                            className="w-36 h-36 rounded-full flex items-center justify-center text-5xl shadow-2xl transition-all transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none mx-auto"
+                                            style={{ backgroundColor: isRecording ? '#dc2626' : (isDarkMode ? '#18181b' : '#0f172a') }}
+                                        >
+                                            {isProcessing ? '⌛' : isRecording ? '⏹' : '🎙️'}
+                                        </button>
+                                        <p className={`mt-5 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                            {isRecording
+                                                ? `Recording ${formatTime(recordingTime)} · click to stop`
+                                                : isProcessing ? 'Transcribing…'
+                                                : 'Click to start recording'}
+                                        </p>
+                                        {!hasApiKey && (
+                                            <p className={`mt-2 text-xs ${isDarkMode ? 'text-red-400' : 'text-red-500'}`}>
+                                                Configure your Groq API key in Settings first
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <SettingsDialog
+                        isOpen={showSettings}
+                        onClose={() => setShowSettings(false)}
+                        onSave={() => {
+                            checkApiKey();
+                            setToast({ message: 'Settings saved', type: 'success' });
+                        }}
+                        isDarkMode={isDarkMode}
+                        onToggleTheme={() => setIsDarkMode(v => !v)}
+                    />
+
+                    <FeedbackModal
+                        isOpen={showFeedback}
+                        onClose={() => setShowFeedback(false)}
+                        isDarkMode={isDarkMode}
+                    />
+
+                    {toast && (
+                        <Toast
+                            message={toast.message}
+                            type={toast.type}
+                            onClose={() => setToast(null)}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        // Simple hash-based routing
+        function RouterApp() {
+            const [route, setRoute] = useState(window.location.hash);
+            
+            useEffect(() => {
+                const handleHashChange = () => {
+                    setRoute(window.location.hash);
+                };
+                
+                window.addEventListener('hashchange', handleHashChange);
+                return () => window.removeEventListener('hashchange', handleHashChange);
+            }, []);
+            
+            console.log('Current route:', route);
+            
+            // Route based on hash
+            if (route === '#/pill') {
+                return <Pill />;
+            }
+            if (route === '#/login') {
+                return <LoginScreen />;
+            }
+
+            return <App />;
+        }
+
+        ReactDOM.render(<RouterApp />, document.getElementById('root'));
+    </script>
+    {% endraw %}
+</body>
+</html>

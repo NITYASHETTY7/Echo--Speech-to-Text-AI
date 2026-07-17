@@ -1,0 +1,78 @@
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+local.properties
+config.json
+config.backup.json
+**/config.json
+**/config.backup.json
+secrets.json
+credentials.json
+*.secret
+*.secrets
+
+# Private keys, certificates, and signing material
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Node dependencies
+node_modules/
+
+# Android and Gradle local/generated state
+.gradle/
+.kotlin/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Application build and packaging output
+dist/
+out/
+build-backend/
+*.apk
+*.aab
+*.app
+*.dmg
+*.zip
+
+# Local runtime data and test artifacts
+recordings/
+transcription_history.json
+server_port.txt
+flask.pid
+dynalite-data/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Temporary and backup files
+*.tmp
+*.temp
+*.bak
+*.backup

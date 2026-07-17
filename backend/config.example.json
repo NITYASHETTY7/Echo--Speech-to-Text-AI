@@ -1,0 +1,18 @@
+{
+  "api_key": "gsk_your_groq_key_here",
+  "language": "en",
+  "history_retention_days": 30,
+
+  "grammar_correction_enabled": true,
+  "bedrock_api_key": "your_bedrock_api_key_here",
+  "bedrock_llm_model_id": "amazon.nova-lite-v1:0",
+  "dynamodb_endpoint_url": "",
+  "dynamodb_access_key_id": "your_aws_access_key_id",
+  "dynamodb_secret_access_key": "your_aws_secret_access_key",
+  "aws_region": "us-east-1",
+
+  "cognito_domain": "your-app.auth.us-east-1.amazoncognito.com",
+  "cognito_client_id": "your_cognito_app_client_id",
+  "cognito_user_pool_id": "us-east-1_xxxxxxxxx",
+  "cognito_region": "us-east-1"
+}
