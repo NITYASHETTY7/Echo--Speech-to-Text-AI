@@ -9,11 +9,13 @@ import com.echo.dictation.core.accessibility.TextInsertionHelper
 import com.echo.dictation.core.accessibility.TextInsertionAccessibilityService
 import com.echo.dictation.core.audio.AudioFileManager
 import com.echo.dictation.core.audio.AudioRecorder
-import com.echo.dictation.core.audio.RecordingResult
 import com.echo.dictation.core.permission.PermissionManager
 import com.echo.dictation.data.local.AppPreferences
 import com.echo.dictation.domain.repository.TranscriptionRepository
-import com.echo.dictation.speech.GroqApiKeyStore
+import com.echo.dictation.speech.provider.ProviderRegistry
+import com.echo.dictation.speech.provider.ProviderSettings
+import com.echo.dictation.speech.provider.SpeechProviderFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,22 +44,36 @@ class PillController @Inject constructor(
     private val preferences: AppPreferences,
     private val permissions: PermissionManager,
     private val textInsertionHelper: TextInsertionHelper,
-    private val groqApiKeyStore: GroqApiKeyStore,
+    private val providerFactory: SpeechProviderFactory,
+    private val providerSettings: ProviderSettings,
 ) {
     private val state = MutableStateFlow<PillState>(PillState.Idle)
     val pillState: StateFlow<PillState> = state.asStateFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    /**
+     * The coroutine scope used for all recording/transcription work.
+     *
+     * PillController is a @Singleton but PillOverlayService is not — the service
+     * can be stopped and restarted while the controller instance lives on.
+     * cleanup() cancels this scope; newScope() creates a fresh one so that
+     * subsequent service starts work correctly without reconstructing the singleton.
+     */
+    private var scope = newScope()
+
+    private fun newScope() = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     private var currentFile: File? = null
 
-    /** Set by PillOverlayService so we can post Toasts from a service context. */
+    @Volatile private var transcriptionJob: Job? = null
+
     var serviceContext: android.content.Context? = null
 
     fun toggleState() {
+        Log.d(TAG, "toggleState() current=${state.value}")
         when (state.value) {
-            is PillState.Idle        -> startRecording()
-            is PillState.Recording   -> stopRecording()
-            is PillState.Transcribing -> showToast("Still transcribing, please wait…")
+            is PillState.Idle         -> startRecording()
+            is PillState.Recording    -> stopRecording()
+            is PillState.Transcribing -> cancelTranscription()
         }
     }
 
@@ -80,9 +96,8 @@ class PillController @Inject constructor(
         }
 
         if (audioRecorder.recording.value) {
-            Log.w(TAG, "Recorder still active, ignoring duplicate start")
-            state.value = PillState.Idle
-            return
+            Log.w(TAG, "startRecording — recorder still active, stopping first")
+            audioRecorder.stop()
         }
 
         try {
@@ -99,20 +114,34 @@ class PillController @Inject constructor(
         }
     }
 
-    // ─── Stop ────────────────────────────────────────────────────────────────
+    // ─── Cancel ──────────────────────────────────────────────────────────────
+
+    private fun cancelTranscription() {
+        Log.d(TAG, "cancelTranscription()")
+        if (audioRecorder.recording.value) audioRecorder.stop()
+        currentFile = null
+        val job = transcriptionJob
+        if (job != null && job.isActive) {
+            job.cancel(CancellationException("Cancelled by user tap"))
+        } else {
+            transcriptionJob = null
+            state.value = PillState.Idle
+        }
+    }
+
+    // ─── Stop → transcribe ────────────────────────────────────────────────────
 
     private fun stopRecording() {
         Log.d(TAG, "Stop recording requested")
 
-        // Capture the focused node synchronously on the Main thread NOW, before the
-        // network call clears FOCUS_INPUT from the target app's window.
         val nodeAtTapTime = TextInsertionAccessibilityService.instance?.lastEditableNode
         Log.d(TAG, "Node at tap: ${nodeAtTapTime?.packageName ?: "null"}")
 
-        // Pre-flight: reject immediately if no API key is configured.
-        if (!groqApiKeyStore.isConfigured) {
-            Log.e(TAG, "No Groq API key configured")
-            showToast("No Groq API key saved. Open Echo → Settings to add your key.")
+        // Pre-flight: ensure the selected provider has a key configured
+        if (!providerFactory.isCurrentProviderConfigured()) {
+            val providerName = ProviderRegistry.getConfig(providerSettings.selectedProvider).displayName
+            Log.e(TAG, "No API key configured for $providerName")
+            showToast("No API key for $providerName. Open Echo → Settings to configure.")
             audioRecorder.stop()
             currentFile = null
             state.value = PillState.Idle
@@ -120,72 +149,100 @@ class PillController @Inject constructor(
         }
 
         state.value = PillState.Transcribing
+        Log.d(TAG, "State → Transcribing")
 
-        scope.launch(Dispatchers.IO) {
+        val job = scope.launch(Dispatchers.IO) {
+            Log.d(TAG, "[IO] Coroutine started on ${Thread.currentThread().name}")
             try {
-                // Stop recorder — returns file + peak amplitude accumulated during recording.
+                Log.d(TAG, "[IO] Stopping recorder…")
                 val recordingResult = audioRecorder.stop()
+                Log.d(TAG, "[IO] Recorder stopped → ${
+                    recordingResult?.let { "file=${it.file.name} peak=${it.peakAmplitude}" } ?: "null"
+                }")
 
                 if (recordingResult == null) {
-                    Log.e(TAG, "No recording result — file missing or recorder failed")
+                    Log.e(TAG, "[IO] No recording result")
                     withContext(Dispatchers.Main) { showToast("No audio captured. Try again.") }
                     return@launch
                 }
 
                 val (recordedFile, peakAmplitude) = recordingResult
-                Log.d(TAG, "peak=$peakAmplitude  file=${recordedFile.name}  size=${recordedFile.length()}B")
+                Log.d(TAG, "[IO] peak=$peakAmplitude  file=${recordedFile.name}  size=${recordedFile.length()}B")
 
-                // ── Silence gate ──────────────────────────────────────────────
-                // MediaRecorder amplitude range is 0–32767.
-                // Empirical threshold: true silence ≈ 0–150; breathing/room noise ≈ 150–500;
-                // quiet speech starts around 500–800; normal speech 1000+.
-                // We reject anything below 500 to avoid sending silence to Whisper.
                 if (peakAmplitude < SILENCE_THRESHOLD) {
-                    Log.w(TAG, "Peak $peakAmplitude < threshold $SILENCE_THRESHOLD — silence, skipping")
+                    Log.w(TAG, "[IO] Silence — skipping")
                     recordedFile.delete()
                     withContext(Dispatchers.Main) { showToast("No speech detected.") }
                     return@launch
                 }
 
-                // ── Send to Whisper ───────────────────────────────────────────
-                Log.d(TAG, "Speech detected (peak=$peakAmplitude), sending to server")
                 val model = preferences.model
-                val result = transcriptionRepository.transcribe(recordedFile, model)
+                Log.d(TAG, "[IO] Sending to provider — file=${recordedFile.name} model=$model")
+
+                val result = runCatching {
+                    transcriptionRepository.transcribe(recordedFile, model)
+                }.getOrElse { t ->
+                    Log.e(TAG, "[IO] Repository exception: ${t::class.java.name}: ${t.message}", t)
+                    Result.failure(t)
+                }
+
+                Log.d(TAG, "[IO] Repository returned — isSuccess=${result.isSuccess}")
 
                 withContext(Dispatchers.Main) {
                     result.fold(
                         onSuccess = { transcription ->
-                            Log.d(TAG, "Transcription OK: ${transcription.text.take(80)}")
+                            Log.d(TAG, "[Main] Transcription OK: '${transcription.text.take(80)}'")
                             if (transcription.text.isEmpty()) {
-                                Log.w(TAG, "Transcription discarded as hallucination — no speech inserted")
                                 showToast("No speech detected.")
                             } else {
                                 textInsertionHelper.insertTextIntoNode(
                                     text       = transcription.text,
                                     targetNode = nodeAtTapTime,
-                                    showToast  = true
+                                    showToast  = true,
                                 )
                             }
                         },
                         onFailure = { error ->
-                            Log.e(TAG, "Transcription failed: ${error.message}", error)
-                            showToast("Transcription failed: ${error.message}")
+                            Log.e(TAG, "[Main] Transcription failed: ${error::class.java.name}: ${error.message}", error)
+                            val msg = when (error) {
+                                is java.net.UnknownHostException   -> "No internet — cannot reach provider"
+                                is java.net.SocketTimeoutException -> "Request timed out — check connection"
+                                is javax.net.ssl.SSLException      -> "SSL error: ${error.message}"
+                                is java.io.IOException             -> "Network error: ${error.message}"
+                                else                               -> error.message ?: "Transcription failed"
+                            }
+                            showToast(msg)
                         }
                     )
                 }
 
+            } catch (ce: CancellationException) {
+                Log.d(TAG, "[IO] Transcription cancelled: ${ce.message}")
+                throw ce
             } catch (e: Exception) {
-                Log.e(TAG, "Pipeline error: ${e.message}", e)
+                Log.e(TAG, "[IO] Pipeline exception: ${e::class.java.name}: ${e.message}", e)
                 withContext(Dispatchers.Main) { showToast("Error: ${e.message}") }
             } finally {
-                // Always reset — success, failure, silence, or exception.
+                Log.d(TAG, "[IO] finally — cleaning up")
+                if (audioRecorder.recording.value) audioRecorder.stop()
+                transcriptionJob = null
                 currentFile = null
-                withContext(Dispatchers.Main) { state.value = PillState.Idle }
+                try {
+                    withContext(Dispatchers.Main.immediate) {
+                        state.value = PillState.Idle
+                        Log.d(TAG, "[Main] State → Idle ✓")
+                    }
+                } catch (ce: CancellationException) {
+                    Log.e(TAG, "[finally] scope cancelled, forcing Idle directly")
+                    state.value = PillState.Idle
+                }
             }
         }
+        transcriptionJob = job
+        Log.d(TAG, "transcriptionJob assigned: $job")
     }
 
-    // ─── Toast helper ────────────────────────────────────────────────────────
+    // ─── Toast ───────────────────────────────────────────────────────────────
 
     private fun showToast(message: String) {
         val ctx = serviceContext ?: return
@@ -194,25 +251,27 @@ class PillController @Inject constructor(
         }
     }
 
-    // ─── Lifecycle ───────────────────────────────────────────────────────────
+    // ─── Lifecycle ────────────────────────────────────────────────────────────
 
     fun cleanup() {
-        if (state.value is PillState.Recording) audioRecorder.stop()
-        state.value = PillState.Idle   // also covers Transcribing
+        Log.d(TAG, "cleanup() called")
+        if (audioRecorder.recording.value) audioRecorder.stop()
+        transcriptionJob?.cancel(CancellationException("Service destroyed"))
+        transcriptionJob = null
+        currentFile = null
+        state.value = PillState.Idle
         serviceContext = null
+        // Cancel the old scope, then immediately create a fresh one.
+        // PillController is a @Singleton — the same instance is reused every time
+        // PillOverlayService starts. Without this, scope.launch() produces a job
+        // in {Cancelling} state and the coroutine body never executes.
         scope.cancel()
+        scope = newScope()
+        Log.d(TAG, "cleanup() done — fresh scope ready for next service start")
     }
 
     companion object {
         private const val TAG = "PillController"
-
-        /**
-         * Minimum peak amplitude required to consider a recording as containing speech.
-         * MediaRecorder.getMaxAmplitude() range: 0–32767.
-         * Dead silence ≈ 0–150; room noise/breathing ≈ 150–800; quiet speech ≈ 800–2000;
-         * normal speech 2000+. 1500 reliably rejects noise/breathing while accepting
-         * even quiet whispered speech.
-         */
         private const val SILENCE_THRESHOLD = 1500
     }
 }

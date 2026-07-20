@@ -1,11 +1,12 @@
 package com.echo.dictation.di
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Room
-import com.echo.dictation.BuildConfig
 import com.echo.dictation.data.local.db.EchoDatabase
-import com.echo.dictation.speech.GroqApi
-import com.echo.dictation.speech.GroqApiKeyInterceptor
+import com.echo.dictation.speech.provider.ProviderKeyStore
+import com.echo.dictation.speech.provider.ProviderSettings
+import com.echo.dictation.speech.provider.SpeechProviderFactory
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -13,8 +14,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -22,7 +21,9 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    // --- Room ---
+    private const val TAG = "AppModule"
+
+    // ── Room ──────────────────────────────────────────────────────────────────
 
     @Provides
     @Singleton
@@ -32,50 +33,49 @@ object AppModule {
     @Provides
     fun dao(db: EchoDatabase) = db.transcriptions()
 
-    // --- Groq OkHttp client ---
+    // ── OkHttpClient ──────────────────────────────────────────────────────────
     //
-    // The Flask backend's AuthInterceptor (localhost Bearer token) is gone.
-    // GroqApiKeyInterceptor replaces it: it injects "Authorization: Bearer <groq-key>"
-    // read lazily from GroqApiKeyStore (EncryptedSharedPreferences) on every request.
+    // A single shared OkHttpClient with no auth interceptor.
+    // Authentication is added per-request by each SpeechProvider implementation
+    // so that credential changes take effect immediately without rebuilding the client.
     //
-    // Timeouts mirror the old Flask client:
-    //   connect  30 s - Groq's edge is fast but DNS + TLS add latency on mobile
-    //   read    120 s - large audio files can take a while to process
-    //   write   120 s - uploading a long recording over a slow connection
+    // Timeouts:
+    //   connect  30 s — DNS + TLS on mobile
+    //   read    120 s — large audio uploads / AssemblyAI polling
+    //   write   120 s — uploading long recordings
 
     @Provides
     @Singleton
-    fun groqOkHttpClient(keyInterceptor: GroqApiKeyInterceptor): OkHttpClient =
-        OkHttpClient.Builder()
-            .addInterceptor(keyInterceptor)
+    fun okHttpClient(): OkHttpClient {
+        Log.d(TAG, "Building shared OkHttpClient")
+        return OkHttpClient.Builder()
             .addInterceptor(
-                HttpLoggingInterceptor().apply {
-                    level = if (BuildConfig.DEBUG)
-                        HttpLoggingInterceptor.Level.BASIC
-                    else
-                        HttpLoggingInterceptor.Level.NONE
-                }
+                HttpLoggingInterceptor { message ->
+                    // Redact any Authorization or api-key header values before logging
+                    val safe = message
+                        .replace(Regex("(?i)(authorization:\\s*)[^\\r\\n]+"), "$1[REDACTED]")
+                        .replace(Regex("(?i)(x-goog-api-key:\\s*)[^\\r\\n]+"), "$1[REDACTED]")
+                        .replace(Regex("(?i)(api-key:\\s*)[^\\r\\n]+"), "$1[REDACTED]")
+                    Log.d("OkHttp", safe)
+                }.apply { level = HttpLoggingInterceptor.Level.HEADERS }
             )
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
             .build()
+    }
 
-    // --- Groq Retrofit instance ---
+    // ── Provider infrastructure ───────────────────────────────────────────────
     //
-    // Hard-coded to https://api.groq.com/openai/v1/ - no BuildConfig field needed.
-    // The old API_BASE_URL (LAN IP) has been removed from build.gradle.kts.
+    // ProviderKeyStore and ProviderSettings are @Inject-able singletons, so Hilt
+    // constructs them automatically. SpeechProviderFactory is also @Inject-able,
+    // but we explicitly provide it here so it receives the shared OkHttpClient.
 
     @Provides
     @Singleton
-    fun groqRetrofit(client: OkHttpClient): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://api.groq.com/openai/v1/")
-            .client(client)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-
-    @Provides
-    @Singleton
-    fun groqApi(retrofit: Retrofit): GroqApi = retrofit.create(GroqApi::class.java)
+    fun speechProviderFactory(
+        keyStore: ProviderKeyStore,
+        settings: ProviderSettings,
+        httpClient: OkHttpClient,
+    ): SpeechProviderFactory = SpeechProviderFactory(keyStore, settings, httpClient)
 }

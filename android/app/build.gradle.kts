@@ -1,18 +1,9 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
     id("com.google.dagger.hilt.android")
-}
-
-// Read local.properties so we can inject secrets as BuildConfig fields.
-// The file is git-ignored and never shipped in source control.
-val localProps = Properties().also { props ->
-    val f = rootProject.file("local.properties")
-    if (f.exists()) props.load(f.inputStream())
 }
 
 android {
@@ -22,17 +13,11 @@ android {
         applicationId = "com.echo.dictation"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
-        // Groq API key — read from local.properties at build time so the key is
-        // never hard-coded in source. Falls back to empty string (key unconfigured).
-        buildConfigField(
-            "String",
-            "GROQ_API_KEY",
-            "\"${localProps.getProperty("GROQ_API_KEY", "")}\""
-        )
+        // No API keys are baked into the APK. Users configure their provider in Settings.
     }
     buildTypes {
         debug {
@@ -47,9 +32,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Sign with debug keystore for now so gradlew assembleRelease works
-            // without a production keystore. Replace with a real signingConfig before
-            // publishing to the Play Store.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -57,7 +39,6 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true; viewBinding = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
-    // Room schema export directory (exportSchema = true in EchoDatabase)
     ksp {
         arg("room.schemaLocation", "$projectDir/schemas")
     }

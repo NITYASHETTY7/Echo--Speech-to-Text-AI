@@ -10,6 +10,20 @@
 -keepclassmembers class **$WhenMappings { <fields>; }
 -keep class kotlin.Metadata { *; }
 
+# ── Kotlin Coroutines ─────────────────────────────────────────────────────────
+-keep class kotlin.coroutines.Continuation { *; }
+-keepclassmembers class * implements kotlin.coroutines.Continuation {
+    public <init>(...);
+    public java.lang.Object invokeSuspend(java.lang.Object);
+    public kotlin.coroutines.CoroutineContext getContext();
+}
+-keep class kotlin.coroutines.intrinsics.** { *; }
+-keepclassmembers class kotlinx.coroutines.** { *; }
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory { *; }
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler { *; }
+-keepclassmembers class kotlinx.coroutines.** { volatile <fields>; }
+-dontwarn kotlinx.coroutines.**
+
 # ── Hilt / Dagger ─────────────────────────────────────────────────────────────
 -keep class dagger.hilt.** { *; }
 -keep @dagger.hilt.android.HiltAndroidApp class * { *; }
@@ -29,10 +43,8 @@
 -keep @androidx.room.Dao class * { *; }
 -keepclassmembers @androidx.room.Entity class * { <fields>; }
 
-# ── Retrofit + OkHttp ─────────────────────────────────────────────────────────
+# ── Retrofit ──────────────────────────────────────────────────────────────────
 -dontwarn retrofit2.**
--dontwarn okhttp3.**
--dontwarn okio.**
 -keep class retrofit2.** { *; }
 -keepclassmembers,allowshrinking,allowobfuscation interface * {
     @retrofit2.http.* <methods>;
@@ -40,6 +52,17 @@
 -keepclasseswithmembers class * {
     @retrofit2.http.* <methods>;
 }
+-keep class retrofit2.KotlinExtensions { *; }
+-keep class retrofit2.KotlinExtensions$* { *; }
+
+# ── OkHttp ────────────────────────────────────────────────────────────────────
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+-keep class okhttp3.internal.** { *; }
+-keep class okhttp3.internal.platform.** { *; }
+-dontwarn okhttp3.internal.**
 
 # ── Gson ──────────────────────────────────────────────────────────────────────
 -keepattributes *Annotation*
@@ -49,23 +72,20 @@
 -keep class * implements com.google.gson.JsonSerializer { *; }
 -keep class * implements com.google.gson.JsonDeserializer { *; }
 
-# Keep all Groq API response models so Gson can deserialize them
--keep class com.echo.dictation.speech.GroqTranscriptionResponse { *; }
--keep class com.echo.dictation.speech.GroqSegment { *; }
+# ── Speech provider package ───────────────────────────────────────────────────
+# All provider classes, configs, and result models must survive R8 intact.
+-keep class com.echo.dictation.speech.provider.** { *; }
 
-# ── Domain / data models (Room entities + domain models used by Gson) ─────────
+# ── Domain / data models ──────────────────────────────────────────────────────
 -keep class com.echo.dictation.domain.model.** { *; }
 -keep class com.echo.dictation.data.local.db.** { *; }
 
 # ── Accessibility service ─────────────────────────────────────────────────────
-# System binds AccessibilityService by name — never rename or remove it.
 -keep class com.echo.dictation.core.accessibility.TextInsertionAccessibilityService { *; }
-# TextInsertionHelper is Hilt-injected and accesses the service via companion object.
 -keep class com.echo.dictation.core.accessibility.TextInsertionHelper { *; }
 
 # ── Hilt entry points ─────────────────────────────────────────────────────────
 -keep @dagger.hilt.EntryPoint interface * { *; }
--keep class com.echo.dictation.EchoApplication$AppEntryPoint { *; }
 
 # ── Android components ────────────────────────────────────────────────────────
 -keep class com.echo.dictation.service.BootReceiver { *; }
@@ -76,20 +96,10 @@
 # ── Security Crypto ───────────────────────────────────────────────────────────
 -keep class androidx.security.crypto.** { *; }
 -dontwarn androidx.security.crypto.**
-# errorprone annotations are compile-only and not present at runtime;
-# they are pulled in transitively by tink (used by security-crypto).
 -dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
 -dontwarn com.google.errorprone.annotations.CheckReturnValue
 -dontwarn com.google.errorprone.annotations.Immutable
 -dontwarn com.google.errorprone.annotations.RestrictedApi
-
-# ── Coroutines ────────────────────────────────────────────────────────────────
--keepnames class kotlinx.coroutines.internal.MainDispatcherFactory { *; }
--keepnames class kotlinx.coroutines.CoroutineExceptionHandler { *; }
--keepclassmembers class kotlinx.coroutines.** {
-    volatile <fields>;
-}
--dontwarn kotlinx.coroutines.**
 
 # ── Timber ────────────────────────────────────────────────────────────────────
 -dontwarn org.jetbrains.annotations.**

@@ -17,5 +17,6 @@ data class AppSettings(
     val grammarEnabled: Boolean = true,
     val theme: String = "system",
     val autoStart: Boolean = false,
+    /** Map of provider ID (lowercase name) → configured flag. */
     val providerConfigured: Map<String, Boolean> = emptyMap(),
 )

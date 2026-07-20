@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ripple
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -95,6 +96,8 @@ import com.echo.dictation.presentation.theme.OnSurfaceVariant
 import com.echo.dictation.presentation.theme.PrimaryColor
 import com.echo.dictation.presentation.theme.PrimaryVariant
 import com.echo.dictation.service.overlay.PillOverlayService
+import com.echo.dictation.speech.provider.ProviderKeyStore
+import com.echo.dictation.speech.provider.ProviderSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -113,7 +116,9 @@ import javax.inject.Inject
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val repository: TranscriptionRepository,
-    val permissions: PermissionManager
+    val permissions: PermissionManager,
+    private val providerKeyStore: ProviderKeyStore,
+    private val providerSettings: ProviderSettings,
 ) : ViewModel() {
     val history: StateFlow<List<Transcription>> = repository.history().stateIn(
         scope = viewModelScope,
@@ -123,6 +128,10 @@ class MainViewModel @Inject constructor(
 
     private val _uploadedTranscriptions = MutableSharedFlow<Transcription>(replay = 1)
     val uploadedTranscriptions: SharedFlow<Transcription> = _uploadedTranscriptions
+
+    /** True when the currently selected provider has an API key configured. */
+    val providerConfigured: Boolean
+        get() = providerKeyStore.isConfigured(providerSettings.selectedProvider)
 
     init {
         viewModelScope.launch { repository.sync() }
@@ -143,6 +152,7 @@ class MainViewModel @Inject constructor(
 
 @Composable
 fun MainScreen(
+    onNavigateToSettings: () -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -197,6 +207,18 @@ fun MainScreen(
         }
     }
 
+    // Re-check provider configured state on resume
+    var providerConfigured by remember { mutableStateOf(viewModel.providerConfigured) }
+    DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                providerConfigured = viewModel.providerConfigured
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -208,7 +230,16 @@ fun MainScreen(
                 .statusBarsPadding()
         ) {
             // ── Header ────────────────────────────────────────────────────────
-            ScreenHeader()
+            ScreenHeader(onNavigateToSettings = onNavigateToSettings)
+
+            // ── Provider not configured banner ────────────────────────────────
+            AnimatedVisibility(
+                visible = !providerConfigured,
+                enter = fadeIn() + slideInVertically(),
+                exit = fadeOut()
+            ) {
+                ProviderNotConfiguredBanner(onSetUp = onNavigateToSettings)
+            }
 
             // ── Accessibility banner ──────────────────────────────────────────
             AnimatedVisibility(
@@ -303,13 +334,16 @@ fun MainScreen(
 // ─── Header ──────────────────────────────────────────────────────────────────
 
 @Composable
-private fun ScreenHeader() {
+private fun ScreenHeader(onNavigateToSettings: () -> Unit = {}) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 24.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -329,7 +363,7 @@ private fun ScreenHeader() {
                 )
             }
             Spacer(Modifier.width(14.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "History",
                     style = MaterialTheme.typography.headlineMedium,
@@ -340,6 +374,49 @@ private fun ScreenHeader() {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.alpha(0.7f)
+                )
+            }
+            androidx.compose.material3.IconButton(onClick = onNavigateToSettings) {
+                Icon(
+                    imageVector = Icons.Outlined.Settings,
+                    contentDescription = "Settings",
+                    tint = OnSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+    }
+}
+
+// ─── Provider not configured banner ──────────────────────────────────────────
+
+@Composable
+private fun ProviderNotConfiguredBanner(onSetUp: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "Configure your AI speech provider to start transcribing",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = onSetUp) {
+                Text(
+                    text = "Set Up",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.labelLarge,
                 )
             }
         }

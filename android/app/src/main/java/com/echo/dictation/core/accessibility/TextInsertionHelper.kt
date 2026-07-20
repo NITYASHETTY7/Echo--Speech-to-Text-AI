@@ -58,7 +58,7 @@ class TextInsertionHelper @Inject constructor(
         Log.d(TAG, "Clipboard fallback used: focused cursor insertion failed or unavailable")
         copyToClipboard(text)
         if (showToast) {
-            Toast.makeText(context, "Transcription copied to clipboard", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "No active text field found. Transcript copied to clipboard.", Toast.LENGTH_SHORT).show()
         }
         return false
     }

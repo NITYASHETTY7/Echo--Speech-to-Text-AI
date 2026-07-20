@@ -10,12 +10,8 @@ interface TranscriptionRepository {
     suspend fun delete(id: String)
 }
 
-enum class ApiProvider { GROQ, OPENAI, BEDROCK }
-
 interface SettingsRepository {
     val settings: StateFlow<AppSettings>
-    suspend fun saveKey(provider: ApiProvider, key: String): Result<Unit>
-    suspend fun test(provider: ApiProvider, key: String?): Result<Unit>
     suspend fun updateLanguage(value: String)
     suspend fun updateRetention(value: Int)
     suspend fun updateGrammar(value: Boolean)
