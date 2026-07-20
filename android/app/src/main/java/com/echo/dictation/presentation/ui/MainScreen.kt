@@ -143,7 +143,6 @@ class MainViewModel @Inject constructor(
 
 @Composable
 fun MainScreen(
-    onLogout: () -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current

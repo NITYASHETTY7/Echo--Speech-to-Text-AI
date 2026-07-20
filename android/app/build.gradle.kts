@@ -35,16 +35,32 @@ android {
         )
     }
     buildTypes {
-        debug { isMinifyEnabled = false }
+        debug {
+            isMinifyEnabled = false
+            isDebuggable = true
+        }
         release {
             isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            isShrinkResources = true
+            isDebuggable = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // Sign with debug keystore for now so gradlew assembleRelease works
+            // without a production keystore. Replace with a real signingConfig before
+            // publishing to the Play Store.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true; viewBinding = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    // Room schema export directory (exportSchema = true in EchoDatabase)
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
 }
 
 dependencies {

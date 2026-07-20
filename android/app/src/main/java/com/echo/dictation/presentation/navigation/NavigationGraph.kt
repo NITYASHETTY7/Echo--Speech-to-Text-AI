@@ -6,7 +6,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import com.echo.dictation.presentation.ui.MainScreen
 
-object Routes { const val LOGIN = "login"; const val MAIN = "main" }
+object Routes { const val MAIN = "main" }
 
 @Composable
 fun NavigationGraph(navController: NavHostController) {
