@@ -5,7 +5,7 @@ import java.io.File
 // ─── Provider identity ───────────────────────────────────────────────────────
 
 enum class ProviderId {
-    GROQ, OPENAI, OPENROUTER, DEEPGRAM, ASSEMBLYAI, GEMINI, AZURE, CUSTOM;
+    GROQ, OPENAI, OPENROUTER, DEEPGRAM, ASSEMBLYAI, GEMINI, AZURE, BEDROCK, CUSTOM;
 
     val displayName: String get() = when (this) {
         GROQ       -> "Groq"
@@ -15,6 +15,7 @@ enum class ProviderId {
         ASSEMBLYAI -> "AssemblyAI"
         GEMINI     -> "Google Gemini"
         AZURE      -> "Azure OpenAI"
+        BEDROCK    -> "AWS Bedrock"
         CUSTOM     -> "Custom OpenAI-Compatible"
     }
 }

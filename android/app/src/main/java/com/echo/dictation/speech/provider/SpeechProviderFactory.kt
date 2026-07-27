@@ -42,6 +42,8 @@ class SpeechProviderFactory @Inject constructor(
             ProviderId.DEEPGRAM   -> DeepgramProvider(config, apiKey, httpClient)
             ProviderId.ASSEMBLYAI -> AssemblyAIProvider(config, apiKey, httpClient)
             ProviderId.GEMINI     -> GeminiProvider(config, apiKey, httpClient)
+            // BEDROCK uses OpenAI-compatible API; baseUrl is the region endpoint
+            // supplied by the user. Falls through to OpenAICompatibleProvider.
             else                  -> OpenAICompatibleProvider(config, apiKey, baseUrl, httpClient)
         }
 

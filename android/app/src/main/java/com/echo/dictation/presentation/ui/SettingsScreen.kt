@@ -915,6 +915,8 @@ private fun ApiKeyLink(providerId: com.echo.dictation.speech.provider.ProviderId
             LinkInfo("aistudio.google.com", "https://aistudio.google.com/app/apikey")
         com.echo.dictation.speech.provider.ProviderId.AZURE ->
             LinkInfo("", null)   // plain note, no link
+        com.echo.dictation.speech.provider.ProviderId.BEDROCK ->
+            LinkInfo("aws.amazon.com", "https://console.aws.amazon.com/bedrock/")
         com.echo.dictation.speech.provider.ProviderId.CUSTOM ->
             return  // no link for custom providers
     }

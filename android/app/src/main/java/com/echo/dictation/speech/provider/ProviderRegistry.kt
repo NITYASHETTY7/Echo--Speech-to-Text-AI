@@ -61,17 +61,40 @@ object ProviderRegistry {
             authValueFormat = "%s",           // header value IS the key directly
         ),
         ProviderConfig(
-            id                   = ProviderId.AZURE,
-            displayName          = "Azure OpenAI",
-            defaultBaseUrl       = "",        // user must supply the deployment endpoint
-            models               = emptyList(),
+            id                    = ProviderId.AZURE,
+            displayName           = "Azure OpenAI",
+            defaultBaseUrl        = "",        // user must supply the deployment endpoint
+            models                = emptyList(),
             requiresCustomBaseUrl = true,
-            requiresCustomModel  = true,
-            authHeaderName       = "api-key",
-            authValueFormat      = "%s",
+            requiresCustomModel   = true,
+            authHeaderName        = "api-key",
+            authValueFormat       = "%s",
         ),
         ProviderConfig(
-            id                   = ProviderId.CUSTOM,
+            id                    = ProviderId.BEDROCK,
+            displayName           = "AWS Bedrock",
+            // Base URL is region-specific: https://bedrock-runtime.<region>.amazonaws.com/
+            // The user must supply their region endpoint in the custom URL field.
+            defaultBaseUrl        = "",
+            models                = listOf(
+                "amazon.nova-lite-v1:0",
+                "amazon.nova-pro-v1:0",
+                "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "anthropic.claude-3-7-sonnet-20250219-v1:0",
+                "anthropic.claude-sonnet-4-5",
+                "anthropic.claude-opus-4-5",
+                "meta.llama3-3-70b-instruct-v1:0",
+                "mistral.mistral-large-2402-v1:0",
+            ),
+            requiresCustomBaseUrl = true,
+            requiresCustomModel   = false,
+            // Bedrock uses AWS SigV4 auth. The API key field stores
+            // "ACCESS_KEY_ID:SECRET_ACCESS_KEY" and the provider handles signing.
+            authHeaderName        = "Authorization",
+            authValueFormat       = "Bearer %s",
+        ),
+        ProviderConfig(
+            id                    = ProviderId.CUSTOM,
             displayName          = "Custom OpenAI-Compatible",
             defaultBaseUrl       = "",        // user must supply
             models               = emptyList(),
