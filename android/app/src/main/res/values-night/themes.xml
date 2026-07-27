@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Dark-mode override for window chrome.
+        Applied automatically by Android when Night Mode is active.
+        Compose EchoTheme handles all actual UI colors; this only controls
+        the system status bar / nav bar icon appearance.
+    -->
+    <style name="Theme.Echo" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+
+        <!-- Dark mode: white icons on dark status/nav bar -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+</resources>

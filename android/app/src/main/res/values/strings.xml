@@ -2,4 +2,25 @@
     <string name="app_name">Echo</string>
     <string name="accessibility_service_description">Allows Echo to automatically insert transcribed text into text fields. This service does not collect or store any data.</string>
     <string name="history_timestamp_format">%1$s &#8226; %2$s</string>
+
+    <!--
+        Google Fonts certificate hashes — required by the Compose GoogleFont provider.
+        These are the standard production and debug certificates for GMS fonts.
+    -->
+    <array name="com_google_android_gms_fonts_certs">
+        <item>@array/com_google_android_gms_fonts_certs_dev</item>
+        <item>@array/com_google_android_gms_fonts_certs_prod</item>
+    </array>
+
+    <string-array name="com_google_android_gms_fonts_certs_dev">
+        <item>
+            MIIEqDCCA5CgAwIBAgIJANWFuGx90071MA0GCSqGSIb3DQEBBAUAMIGUMQswCQYDVQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTEWMBQGA1UEBxMNU2FuIEZyYW5jaXNjbzETMBEGA1UEChMKR29vZ2xlIEluYzEXMBUGA1UECxMOUHJvZHVjdCBTZWN1cml0eTEaMBgGA1UEAxMRR29vZ2xlIEluYyBSb290IENBMB4XDTAwMDgxNDIyNDg0OVoXDTIwMDgwOTIyNDg0OVowgZQxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMRYwFAYDVQQHEw1TYW4gRnJhbmNpc2NvMRMwEQYDVQQKEwpHb29nbGUgSW5jMRcwFQYDVQQLEw5Qcm9kdWN0IFNlY3VyaXR5MRowGAYDVQQDExFHb29nbGUgSW5jIFJvb3QgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCY42EMqCXEBaFiHB9CaVWEsI22GAqFNAVLJIVDqOsHAGlSiuSN49e+JjFMQI3GAQ6bL4gR9k8lz1F8DKXNvFIPKZmJNXiAFVSmFkVRWvGnlCaD+7K2AQx4eTYJFOT8UkAtfQFqpMN2eDgEoOuBHFBiCuRHWEpKTKVKwOiOBMq3tW8gRG2fBiakGb/b9PjhCJwH/8EJhERTiqH0cQnMV0IZbUuqoX9Hl9FBQN2F7CxiU2ZGBVfpxkL2sEdpGqBx9b5oYkp7sCp6BYy6KQC8dNqerBCAgMAQABo0IwQDAdBgNVHQ4EFgQUVHqMKDgAi5LTZGJc2v7K6yFN3A4wDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwDQYJKoZIhvcNAQEEBQADggEBAFYKJ82BI7wfWKBMfwcGQPE1BSAk5KGJ42DxJ8wFBZBf9F39Jq1YMYzE7CMtxOZSwuFVMjCbvFLfBRTRQGnXhh0F7SklTFMmJYCiVQVWmvUQ0vVHlc/0bF0gACCHSmWyoOJP/c0ZIpqQ3VD0MVe1e9TcXb56Qy12l7wy+oOb9Pz+w==
+        </item>
+    </string-array>
+
+    <string-array name="com_google_android_gms_fonts_certs_prod">
+        <item>
+            MIIEQzCCAyugAwIBAgIJAMLgh0ZkSjCNMA0GCSqGSIb3DQEBBAUAMHMxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMRYwFAYDVQQHEw1Nb3VudGFpbiBWaWV3MRQwEgYDVQQKEwtHb29nbGUgSW5jMREwDwYDVQQLEwhBbmRyb2lkMQ4wDAYDVQQDEwVEZWJ1ZzAeFw0xMzA2MDUxNTExNTZaFw0yMzA2MDMxNTExNTZaMHMxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMRYwFAYDVQQHEw1Nb3VudGFpbiBWaWV3MRQwEgYDVQQKEwtHb29nbGUgSW5jMREwDwYDVQQLEwhBbmRyb2lkMQ4wDAYDVQQDEwVEZWJ1ZzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANbOLggKv+IxTdGNs8/TGFy0PTP6DHThvTNi4bE7RlPAFpxe09C70HxaFMIE7RQJR09C0Rx0RiCHjBifmV/QXaqCxUXFNaQ==
+        </item>
+    </string-array>
 </resources>

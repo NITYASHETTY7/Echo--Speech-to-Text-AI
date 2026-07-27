@@ -4,7 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,28 +24,36 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Surface
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,26 +61,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.echo.dictation.domain.ai.JobStatus
 import com.echo.dictation.domain.model.Transcription
 import com.echo.dictation.domain.repository.TranscriptionRepository
+import com.echo.dictation.presentation.ai.AIViewModel
 import com.echo.dictation.presentation.theme.CardColor
 import com.echo.dictation.presentation.theme.OnSurfaceVariant
-import com.echo.dictation.presentation.theme.PrimaryColor
-import com.echo.dictation.presentation.theme.PrimaryVariant
+import com.echo.dictation.presentation.theme.Primary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
-
-// ─── ViewModel ────────────────────────────────────────────────────────────────
 
 @HiltViewModel
 class TranscriptionDetailViewModel @Inject constructor(
@@ -81,20 +95,38 @@ class TranscriptionDetailViewModel @Inject constructor(
     }
 }
 
-// ─── Bottom sheet ─────────────────────────────────────────────────────────────
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TranscriptionDetailBottomSheet(
     transcription: Transcription,
     onDismiss: () -> Unit,
     onCopied: (() -> Unit)? = null,
-    viewModel: TranscriptionDetailViewModel = hiltViewModel()
+    viewModel: TranscriptionDetailViewModel = hiltViewModel(),
+    aiViewModel: AIViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     var showDeleteDialog by remember { mutableStateOf(false) }
+
+    val aiState by aiViewModel.state.collectAsState()
+    val snackbarState = remember { SnackbarHostState() }
+
+    LaunchedEffect(transcription.id) {
+        aiViewModel.loadTranscript(transcription.id)
+    }
+
+    LaunchedEffect(aiState.successMessage) {
+        aiState.successMessage?.let { msg ->
+            snackbarState.showSnackbar(msg, duration = SnackbarDuration.Short)
+            aiViewModel.dismissSuccess()
+        }
+    }
+    LaunchedEffect(aiState.errorMessage) {
+        aiState.errorMessage?.let { msg ->
+            snackbarState.showSnackbar("Error: $msg", duration = SnackbarDuration.Long)
+            aiViewModel.dismissError()
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -103,7 +135,6 @@ fun TranscriptionDetailBottomSheet(
         containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 6.dp,
         dragHandle = {
-            // Custom drag handle
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -126,15 +157,18 @@ fun TranscriptionDetailBottomSheet(
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
         ) {
-            // ── Sheet header ──────────────────────────────────────────────
             SheetHeader(
                 transcription = transcription,
                 context = context,
                 onCopy = {
-                    copyToClipboard(context, transcription.text)
+                    val textToCopy = aiState.activeVersion?.content ?: transcription.text
+                    copyToClipboard(context, textToCopy)
                     onCopied?.invoke()
                 },
-                onShare = { shareText(context, transcription.text) },
+                onShare = {
+                    val textToShare = aiState.activeVersion?.content ?: transcription.text
+                    shareText(context, textToShare)
+                },
                 onDelete = { showDeleteDialog = true }
             )
 
@@ -143,68 +177,181 @@ fun TranscriptionDetailBottomSheet(
                 color = MaterialTheme.colorScheme.outlineVariant,
                 thickness = 0.5.dp
             )
+
+            // Version selector bar
+            VersionSelector(
+                versions = aiState.versions,
+                activeIndex = aiState.activeIndex,
+                onSelectIndex = { aiViewModel.selectVersion(it) },
+            )
+
+            // AIJob Status Banner
+            val latestJob = aiState.latestJob
+            if (latestJob != null && latestJob.status != JobStatus.COMPLETED) {
+                JobStatusBanner(
+                    job = latestJob,
+                    onRetry = {
+                        val retrySource = aiState.activeVersion?.content ?: transcription.text
+                        aiViewModel.retryFailedJob(transcription.id, retrySource)
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Active transcript card
+            val displayText = aiState.activeVersion?.content ?: transcription.text
+            TranscriptCard(text = displayText)
+
             Spacer(Modifier.height(12.dp))
 
-            // ── Full transcript card ───────────────────────────────────────
-            TranscriptCard(text = transcription.text)
+            // AI loading indicator
+            AnimatedVisibility(
+                visible = aiState.isLoading,
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(vertical = 4.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Primary,
+                        strokeWidth = 2.dp,
+                    )
+                    Text(
+                        "Processing AI rewrite...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceVariant,
+                    )
+                }
+            }
 
-            Spacer(Modifier.height(12.dp))
+            // Rewrite button
+            Button(
+                onClick = { aiViewModel.showRewriteSheet() },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Primary.copy(alpha = 0.12f),
+                    contentColor = Primary,
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 14.dp),
+                enabled = !aiState.isLoading,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Rewrite",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
 
-            // ── Model chip ────────────────────────────────────────────────
+            Spacer(Modifier.height(8.dp))
             ModelChip(model = transcription.model)
-
             Spacer(Modifier.height(20.dp))
         }
     }
 
-    // ── Delete confirmation dialog ──────────────────────────────────────────
+    if (aiState.isRewriteSheetVisible) {
+        // The source text for rewrites is always the active (latest processed) version,
+        // not the raw transcription.text. This satisfies Issue 15.
+        val rewriteSourceText = aiState.activeVersion?.content ?: transcription.text
+        RewriteBottomSheet(
+            customPromptText = aiState.customPromptText,
+            onCustomPromptChanged = { aiViewModel.onCustomPromptChanged(it) },
+            onPresetSelected = { templateId -> aiViewModel.applyPreset(transcription.id, rewriteSourceText, templateId) },
+            onTranslateSelected = { language -> aiViewModel.applyTranslation(transcription.id, rewriteSourceText, language) },
+            onCustomPromptSubmit = { aiViewModel.applyCustomPrompt(transcription.id, rewriteSourceText) },
+            onDismiss = { aiViewModel.hideRewriteSheet() },
+        )
+    }
+
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             shape = RoundedCornerShape(24.dp),
-            containerColor = CardColor,
-            titleContentColor = MaterialTheme.colorScheme.onSurface,
-            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            title = {
-                Text(
-                    text = "Delete Transcription?",
-                    style = MaterialTheme.typography.titleMedium
-                )
-            },
-            text = {
-                Text(
-                    text = "This action cannot be undone.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
+            title = { Text("Delete transcription?") },
+            text = { Text("This will permanently delete this transcription and all its AI versions.") },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showDeleteDialog = false
-                        viewModel.deleteTranscription(transcription.id) {
-                            scope.launch {
-                                sheetState.hide()
-                                onDismiss()
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
+                        viewModel.deleteTranscription(transcription.id) { onDismiss() }
+                    }
                 ) {
-                    Text("Delete", style = MaterialTheme.typography.labelLarge)
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) {
-                    Text("Cancel", style = MaterialTheme.typography.labelLarge)
-                }
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
             }
         )
     }
 }
 
-// ─── Sheet header ─────────────────────────────────────────────────────────────
+@Composable
+private fun JobStatusBanner(
+    job: com.echo.dictation.domain.ai.AIJob,
+    onRetry: () -> Unit
+) {
+    val isFailed = job.status == JobStatus.FAILED
+    val containerColor = if (isFailed) MaterialTheme.colorScheme.errorContainer else Primary.copy(alpha = 0.1f)
+    val contentColor = if (isFailed) MaterialTheme.colorScheme.onErrorContainer else Primary
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = if (isFailed) Icons.Outlined.ErrorOutline else Icons.Default.AutoAwesome,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(20.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI Job: ${job.status.displayName}",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor
+                )
+                if (job.errorMessage != null) {
+                    Text(
+                        text = job.errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = contentColor.copy(alpha = 0.8f)
+                    )
+                }
+            }
+            if (isFailed) {
+                OutlinedButton(
+                    onClick = onRetry,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Retry", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SheetHeader(
@@ -212,155 +359,103 @@ private fun SheetHeader(
     context: Context,
     onCopy: () -> Unit,
     onShare: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
 ) {
+    val formattedTime = remember(transcription.timestamp) {
+        SimpleDateFormat("EEE, d MMM yyyy • HH:mm", Locale.getDefault()).format(Date(transcription.timestamp))
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Icon + title
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(PrimaryColor.copy(alpha = 0.25f), PrimaryVariant.copy(alpha = 0.12f))
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.TextSnippet,
-                    contentDescription = null,
-                    tint = PrimaryColor,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-            Column {
-                Text(
-                    text = "Transcription",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = formatTimestamp(context, transcription.timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = OnSurfaceVariant,
-                    modifier = Modifier.alpha(0.8f)
-                )
-            }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = formattedTime,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "${transcription.text.split("\\s+".toRegex()).filter { it.isNotBlank() }.size} words",
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceVariant,
+            )
         }
 
-        // Action icons
-        Row {
-            FilledTonalIconButton(
-                onClick = onCopy,
-                modifier = Modifier.size(40.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.ContentCopy,
-                    contentDescription = "Copy",
-                    modifier = Modifier.size(18.dp)
-                )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = onCopy) {
+                Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copy text", tint = Primary)
             }
-            Spacer(Modifier.width(4.dp))
-            FilledTonalIconButton(
-                onClick = onShare,
-                modifier = Modifier.size(40.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Share,
-                    contentDescription = "Share",
-                    modifier = Modifier.size(18.dp)
-                )
+            IconButton(onClick = onShare) {
+                Icon(imageVector = Icons.Default.Share, contentDescription = "Share text", tint = Primary)
             }
-            Spacer(Modifier.width(4.dp))
-            FilledTonalIconButton(
-                onClick = onDelete,
-                modifier = Modifier.size(40.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Delete,
-                    contentDescription = "Delete",
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp)
-                )
+            IconButton(onClick = onDelete) {
+                Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete transcription", tint = MaterialTheme.colorScheme.error)
             }
         }
     }
 }
-
-// ─── Transcript card ──────────────────────────────────────────────────────────
 
 @Composable
 private fun TranscriptCard(text: String) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = CardColor
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(200.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = CardColor),
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
                 .padding(16.dp)
+                .verticalScroll(rememberScrollState())
         ) {
-            SelectionContainer {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
+            Text(
+                text = text.ifEmpty { "(Empty transcript)" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.3f,
+            )
         }
     }
 }
 
-// ─── Model chip ───────────────────────────────────────────────────────────────
-
 @Composable
 private fun ModelChip(model: String) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 1.dp
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        Icon(
+            imageVector = Icons.Outlined.TextSnippet,
+            contentDescription = null,
+            tint = OnSurfaceVariant,
+            modifier = Modifier.size(14.dp),
+        )
         Text(
             text = "Model: $model",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-                .alpha(0.8f)
+            color = OnSurfaceVariant,
         )
     }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText("Transcription", text))
+    val clip = ClipData.newPlainText("Transcription", text)
+    clipboard.setPrimaryClip(clip)
+    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
 }
 
 private fun shareText(context: Context, text: String) {
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
+    val sendIntent = Intent().apply {
+        action = Intent.ACTION_SEND
         putExtra(Intent.EXTRA_TEXT, text)
+        type = "text/plain"
     }
-    context.startActivity(Intent.createChooser(intent, "Share transcription"))
+    context.startActivity(Intent.createChooser(sendIntent, "Share transcript"))
 }

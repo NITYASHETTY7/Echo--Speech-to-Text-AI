@@ -8,6 +8,8 @@ interface TranscriptionRepository {
     fun history(limit: Int = 100): kotlinx.coroutines.flow.Flow<List<com.echo.dictation.domain.model.Transcription>>
     suspend fun sync(): Result<Unit>
     suspend fun delete(id: String)
+    /** Updates the display text of an existing transcription row (used after AI post-processing). */
+    suspend fun updateText(id: String, text: String)
 }
 
 interface SettingsRepository {

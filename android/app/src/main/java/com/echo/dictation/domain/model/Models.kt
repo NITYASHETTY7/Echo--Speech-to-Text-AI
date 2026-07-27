@@ -8,6 +8,10 @@ data class Transcription(
     val audioPath: String? = null,
     val userId: String,
     val synced: Boolean = false,
+    val isFavorite: Boolean = false,
+    val isPinned: Boolean = false,
+    /** One of: "PENDING", "SYNCED", "LOCAL_ONLY" */
+    val syncStatus: String = "PENDING",
 )
 
 data class AppSettings(

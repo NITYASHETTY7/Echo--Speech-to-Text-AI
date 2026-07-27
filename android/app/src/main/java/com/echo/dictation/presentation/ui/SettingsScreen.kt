@@ -1,6 +1,8 @@
 package com.echo.dictation.presentation.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -28,6 +31,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.ArrowBack
@@ -43,6 +47,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -60,18 +65,31 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.echo.dictation.presentation.ui.auth.AuthUiState
+import com.echo.dictation.presentation.ui.auth.AuthViewModel
 import com.echo.dictation.speech.provider.ProviderId
 import com.echo.dictation.speech.provider.ProviderRegistry
+import com.echo.dictation.presentation.ai.AIViewModel
 import com.echo.dictation.presentation.theme.CardColor
 import com.echo.dictation.presentation.theme.OnSurfaceVariant
 import com.echo.dictation.presentation.theme.OutlineColor
+import com.echo.dictation.presentation.theme.Primary
 import com.echo.dictation.presentation.theme.PrimaryColor
 import com.echo.dictation.presentation.theme.PrimaryVariant
 
@@ -79,9 +97,17 @@ import com.echo.dictation.presentation.theme.PrimaryVariant
 fun SettingsScreen(
     onBack: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
+    aiViewModel: AIViewModel = hiltViewModel(),
+    authViewModel: AuthViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    // Auth state — used for the Account section
+    val currentUser by authViewModel.currentUser.collectAsState()
+    val isAuthenticated by authViewModel.isAuthenticated.collectAsState()
+    val authUiState by authViewModel.uiState.collectAsState()
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -104,6 +130,67 @@ fun SettingsScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // ── Account section ─────────────────────────────────────────
+                SectionHeader("Account")
+
+                if (isAuthenticated && currentUser != null) {
+                    AccountSignedInCard(
+                        user = currentUser!!,
+                        authUiState = authUiState,
+                        onSignOut = { authViewModel.signOut(context) },
+                    )
+                } else {
+                    AccountSignedOutCard(
+                        authUiState = authUiState,
+                        onSignIn = { authViewModel.signInWithGoogle(context) },
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                // ── AI Enhancements section ─────────────────────────────────
+                SectionHeader("AI Enhancements")
+
+                val aiState by aiViewModel.state.collectAsState()
+                GrammarCorrectionCard(
+                    enabled  = aiState.grammarCorrectionEnabled,
+                    onToggle = { aiViewModel.setGrammarCorrectionEnabled(it) },
+                )
+
+                // Auto Enhance after transcription
+                SettingsCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Auto Enhance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text("Automatically enhance transcriptions after they are generated.", style = MaterialTheme.typography.bodySmall, color = OnSurfaceVariant)
+                        }
+                        Switch(
+                            checked = aiState.autoEnhanceEnabled,
+                            onCheckedChange = { aiViewModel.setAutoEnhanceEnabled(it) }
+                        )
+                    }
+                }
+
+                // Save Original Guaranteed
+                SettingsCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Save Original Transcript", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text("Original audio & text are always preserved immutably", style = MaterialTheme.typography.bodySmall, color = OnSurfaceVariant)
+                        }
+                        Text("Always ON", style = MaterialTheme.typography.labelSmall, color = Primary, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
                 // ── Speech AI section ─────────────────────────────────────────
                 SectionHeader("Speech AI")
 
@@ -135,6 +222,8 @@ fun SettingsScreen(
                         onClear = { viewModel.onClearKey() },
                         onSave  = { viewModel.onSaveKey() },
                     )
+                    // Provider API key link
+                    ApiKeyLink(providerId = state.selectedProvider)
                 }
 
                 // Model
@@ -157,36 +246,6 @@ fun SettingsScreen(
                             selected  = state.selectedModel,
                             models    = models,
                             onSelect  = { viewModel.onModelSelected(it) },
-                        )
-                    }
-                }
-
-                // Base URL
-                SettingsCard {
-                    SettingsLabel("Base URL")
-                    Spacer(Modifier.height(8.dp))
-                    if (state.providerConfig.requiresCustomBaseUrl) {
-                        OutlinedTextField(
-                            value         = state.customBaseUrl,
-                            onValueChange = { viewModel.onBaseUrlChanged(it) },
-                            modifier      = Modifier.fillMaxWidth(),
-                            label         = { Text("Endpoint URL") },
-                            placeholder   = { Text("https://your-deployment.openai.azure.com/") },
-                            singleLine    = true,
-                            colors        = echoTextFieldColors(),
-                        )
-                    } else {
-                        Text(
-                            text  = state.effectiveBaseUrl,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = OnSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(8.dp),
-                                )
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
                         )
                     }
                 }
@@ -235,11 +294,12 @@ fun SettingsScreen(
                 SettingsCard {
                     SettingsLabel("History Retention")
                     Spacer(Modifier.height(8.dp))
-                    val retentionOptions = listOf(7, 14, 30, 60, 90, 365)
+                    // 0 = Forever (no date filter applied)
+                    val retentionOptions = listOf(7, 14, 30, 60, 90, 365, 0)
                     SimpleDropdown(
                         selected     = state.retentionDays,
                         options      = retentionOptions,
-                        displayName  = { days -> "$days days" },
+                        displayName  = { days -> if (days <= 0) "Forever" else "$days days" },
                         onSelect     = { viewModel.onRetentionChanged(it) },
                     )
                 }
@@ -259,6 +319,47 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(32.dp))
             }
+        }
+    }
+}
+
+// ─── Grammar Correction card ──────────────────────────────────────────────────
+
+@Composable
+private fun GrammarCorrectionCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Card(
+        modifier  = Modifier.fillMaxWidth(),
+        shape     = RoundedCornerShape(16.dp),
+        colors    = CardDefaults.cardColors(containerColor = CardColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text  = "Enable Grammar Correction",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text  = "AI corrects grammar, punctuation, capitalization, spelling, and formatting after transcription.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceVariant,
+                        modifier = Modifier.alpha(0.7f),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked        = enabled,
+                    onCheckedChange = onToggle,
+                    colors = SwitchDefaults.colors(checkedThumbColor = MaterialTheme.colorScheme.onPrimary, checkedTrackColor = Primary),
+                )
+            }
+
         }
     }
 }
@@ -314,7 +415,7 @@ private fun SectionHeader(title: String) {
     Text(
         text     = title.uppercase(),
         style    = MaterialTheme.typography.labelMedium,
-        color    = PrimaryColor,
+        color    = Primary,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp),
     )
@@ -376,7 +477,7 @@ private fun ProviderDropdown(selected: ProviderId, onSelect: (ProviderId) -> Uni
                     text    = { Text(config.displayName, color = MaterialTheme.colorScheme.onSurface) },
                     onClick = { onSelect(config.id); expanded = false },
                     leadingIcon = if (config.id == selected) ({
-                        Icon(Icons.Default.Check, null, tint = PrimaryColor, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Check, null, tint = Primary, modifier = Modifier.size(18.dp))
                     }) else null,
                 )
             }
@@ -444,10 +545,10 @@ private fun ApiKeyField(
             Button(
                 onClick  = onSave,
                 modifier = Modifier.fillMaxWidth(),
-                colors   = ButtonDefaults.buttonColors(containerColor = PrimaryColor),
+                colors   = ButtonDefaults.buttonColors(containerColor = Primary),
                 shape    = RoundedCornerShape(10.dp),
             ) {
-                Text("Save Key", color = Color(0xFF0A0F2E))
+                Text("Save Key", color = MaterialTheme.colorScheme.onPrimary)
             }
         }
         if (hasStoredKey && value.isBlank()) {
@@ -510,7 +611,7 @@ private fun <T> SimpleDropdown(
                     text    = { Text(displayName(option), color = MaterialTheme.colorScheme.onSurface) },
                     onClick = { onSelect(option); expanded = false },
                     leadingIcon = if (option == selected) ({
-                        Icon(Icons.Default.Check, null, tint = PrimaryColor, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Check, null, tint = Primary, modifier = Modifier.size(18.dp))
                     }) else null,
                 )
             }
@@ -528,15 +629,15 @@ private fun TestConnectionSection(testState: TestState, onTest: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             enabled  = testState !is TestState.Testing,
             colors   = ButtonDefaults.buttonColors(
-                containerColor = PrimaryColor.copy(alpha = 0.15f),
-                contentColor   = PrimaryColor,
+                containerColor = Primary.copy(alpha = 0.15f),
+                contentColor   = Primary,
             ),
             shape = RoundedCornerShape(10.dp),
         ) {
             if (testState is TestState.Testing) {
                 CircularProgressIndicator(
                     modifier  = Modifier.size(18.dp),
-                    color     = PrimaryColor,
+                    color     = Primary,
                     strokeWidth = 2.dp,
                 )
                 Spacer(Modifier.width(8.dp))
@@ -580,15 +681,290 @@ private fun TestConnectionSection(testState: TestState, onTest: () -> Unit) {
     }
 }
 
+// ─── Account — signed in ──────────────────────────────────────────────────────
+
+@Composable
+private fun AccountSignedInCard(
+    user: com.echo.dictation.domain.model.User,
+    authUiState: AuthUiState,
+    onSignOut: () -> Unit,
+) {
+    val isBusy = authUiState is AuthUiState.Loading
+    val errorMessage = (authUiState as? AuthUiState.Error)?.message
+
+    SettingsCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            UserAvatar(
+                photoUrl    = user.photoUrl,
+                displayName = user.displayName,
+                size        = 52,
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (!user.displayName.isNullOrBlank()) {
+                    Text(
+                        text  = user.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                }
+                if (!user.email.isNullOrBlank()) {
+                    Text(
+                        text  = user.email,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF66BB6A))
+                    )
+                    Text(
+                        text  = "Syncing enabled",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF66BB6A),
+                    )
+                }
+            }
+        }
+
+        if (errorMessage != null) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text     = errorMessage,
+                style    = MaterialTheme.typography.bodySmall,
+                color    = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Button(
+            onClick  = onSignOut,
+            enabled  = !isBusy,
+            modifier = Modifier.fillMaxWidth(),
+            shape    = RoundedCornerShape(12.dp),
+            colors   = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor   = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+        ) {
+            Text("Sign Out", style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+// ─── Account — signed out ─────────────────────────────────────────────────────
+
+@Composable
+private fun AccountSignedOutCard(
+    authUiState: AuthUiState,
+    onSignIn: () -> Unit,
+) {
+    val isLoading    = authUiState is AuthUiState.Loading
+    val errorMessage = (authUiState as? AuthUiState.Error)?.message
+
+    SettingsCard {
+        Row(
+            modifier          = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector        = Icons.Default.Person,
+                    contentDescription = null,
+                    tint               = OnSurfaceVariant,
+                    modifier           = Modifier.size(26.dp),
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text  = "Not signed in",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text  = "Sign in to keep your transcriptions synced across your devices.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceVariant,
+                )
+            }
+        }
+
+        if (errorMessage != null) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text     = errorMessage,
+                style    = MaterialTheme.typography.bodySmall,
+                color    = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Button(
+            onClick  = onSignIn,
+            enabled  = !isLoading,
+            modifier = Modifier.fillMaxWidth(),
+            shape    = RoundedCornerShape(12.dp),
+            colors   = ButtonDefaults.buttonColors(containerColor = Primary),
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier    = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color       = Color.White,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Signing in…", style = MaterialTheme.typography.labelMedium)
+            } else {
+                Text("Sign in with Google", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+// ─── User avatar ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun UserAvatar(photoUrl: String?, displayName: String?, size: Int) {
+    val context = LocalContext.current
+    val sizeDp  = size.dp
+
+    Box(
+        modifier         = Modifier
+            .size(sizeDp)
+            .clip(CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (!photoUrl.isNullOrBlank()) {
+            AsyncImage(
+                model             = ImageRequest.Builder(context).data(photoUrl).crossfade(true).build(),
+                contentDescription = displayName,
+                contentScale      = ContentScale.Crop,
+                modifier          = Modifier.fillMaxSize(),
+            )
+        } else {
+            // Fallback: initials on gradient background
+            Box(
+                modifier         = Modifier
+                    .fillMaxSize()
+                    .background(Brush.linearGradient(listOf(PrimaryColor, PrimaryVariant))),
+                contentAlignment = Alignment.Center,
+            ) {
+                val initials = displayName
+                    ?.split(" ")
+                    ?.take(2)
+                    ?.mapNotNull { it.firstOrNull()?.uppercaseChar() }
+                    ?.joinToString("")
+                    ?: "?"
+                Text(
+                    text  = initials,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+// ─── Provider API key link ────────────────────────────────────────────────────
+
+@Composable
+private fun ApiKeyLink(providerId: com.echo.dictation.speech.provider.ProviderId) {
+    val context = LocalContext.current
+
+    data class LinkInfo(val domain: String, val url: String?)
+
+    val info = when (providerId) {
+        com.echo.dictation.speech.provider.ProviderId.GROQ ->
+            LinkInfo("console.groq.com", "https://console.groq.com/keys")
+        com.echo.dictation.speech.provider.ProviderId.OPENAI ->
+            LinkInfo("platform.openai.com", "https://platform.openai.com/api-keys")
+        com.echo.dictation.speech.provider.ProviderId.OPENROUTER ->
+            LinkInfo("openrouter.ai", "https://openrouter.ai/keys")
+        com.echo.dictation.speech.provider.ProviderId.DEEPGRAM ->
+            LinkInfo("console.deepgram.com", "https://console.deepgram.com/signup")
+        com.echo.dictation.speech.provider.ProviderId.ASSEMBLYAI ->
+            LinkInfo("assemblyai.com", "https://www.assemblyai.com/dashboard/signup")
+        com.echo.dictation.speech.provider.ProviderId.GEMINI ->
+            LinkInfo("aistudio.google.com", "https://aistudio.google.com/app/apikey")
+        com.echo.dictation.speech.provider.ProviderId.AZURE ->
+            LinkInfo("", null)   // plain note, no link
+        com.echo.dictation.speech.provider.ProviderId.CUSTOM ->
+            return  // no link for custom providers
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    if (info.url != null) {
+        // "Get your API key from " — plain  |  "domain" — primary + underline
+        val primary       = Primary
+        val subtle        = OnSurfaceVariant
+        val annotated: AnnotatedString = buildAnnotatedString {
+            withStyle(SpanStyle(color = subtle)) { append("Get your API key from ") }
+            withStyle(
+                SpanStyle(
+                    color          = primary,
+                    textDecoration = TextDecoration.Underline,
+                )
+            ) { append(info.domain) }
+        }
+        Text(
+            text     = annotated,
+            style    = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.clickable {
+                context.startActivity(
+                    android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(info.url),
+                    )
+                )
+            },
+        )
+    } else if (providerId == com.echo.dictation.speech.provider.ProviderId.AZURE) {
+        Text(
+            text  = "Create an API key from your Azure Portal.",
+            style = MaterialTheme.typography.bodySmall,
+            color = OnSurfaceVariant,
+        )
+    }
+}
+
 // ─── Shared text field colours ────────────────────────────────────────────────
 
 @Composable
 private fun echoTextFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor   = PrimaryColor,
+    focusedBorderColor   = Primary,
     unfocusedBorderColor = OutlineColor,
-    focusedLabelColor    = PrimaryColor,
+    focusedLabelColor    = Primary,
     unfocusedLabelColor  = OnSurfaceVariant,
-    cursorColor          = PrimaryColor,
+    cursorColor          = Primary,
     focusedTextColor     = MaterialTheme.colorScheme.onSurface,
     unfocusedTextColor   = MaterialTheme.colorScheme.onSurface,
 )
+

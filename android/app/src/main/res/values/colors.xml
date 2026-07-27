@@ -45,4 +45,10 @@
     <!-- Matches the blue corner of the icon's gradient -->
     <color name="ic_launcher_background">#FF5B6BF8</color>
 
+    <!--
+        Window background shown before Compose draws.
+        Light mode: white. Dark mode override in values-night/colors.xml.
+    -->
+    <color name="window_background">#FFFAFAFF</color>
+
 </resources>

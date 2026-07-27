@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.echo.dictation.domain.ai.ProcessTranscriptionUseCase
+import com.echo.dictation.domain.recording.RecordingEventBus
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,11 +43,14 @@ class PillController @Inject constructor(
     private val audioRecorder: AudioRecorder,
     private val audioFileManager: AudioFileManager,
     private val transcriptionRepository: TranscriptionRepository,
+    private val processTranscriptionUseCase: ProcessTranscriptionUseCase,
+    private val recordingEventBus: RecordingEventBus,
     private val preferences: AppPreferences,
     private val permissions: PermissionManager,
     private val textInsertionHelper: TextInsertionHelper,
     private val providerFactory: SpeechProviderFactory,
     private val providerSettings: ProviderSettings,
+    private val syncManager: com.echo.dictation.domain.sync.SyncManager,
 ) {
     private val state = MutableStateFlow<PillState>(PillState.Idle)
     val pillState: StateFlow<PillState> = state.asStateFlow()
@@ -80,6 +85,12 @@ class PillController @Inject constructor(
     // ─── Start ───────────────────────────────────────────────────────────────
 
     private fun startRecording() {
+        // Echo requires internet for Groq Whisper STT — block recording when offline
+        if (!syncManager.isOnline.value) {
+            showToast("Internet connection required to transcribe speech.")
+            return
+        }
+
         if (!permissions.hasRecordAudio()) {
             Log.e(TAG, "RECORD_AUDIO permission not granted")
             state.value = PillState.Idle
@@ -180,7 +191,7 @@ class PillController @Inject constructor(
                 Log.d(TAG, "[IO] Sending to provider — file=${recordedFile.name} model=$model")
 
                 val result = runCatching {
-                    transcriptionRepository.transcribe(recordedFile, model)
+                    processTranscriptionUseCase.execute(recordedFile, model)
                 }.getOrElse { t ->
                     Log.e(TAG, "[IO] Repository exception: ${t::class.java.name}: ${t.message}", t)
                     Result.failure(t)
@@ -195,6 +206,11 @@ class PillController @Inject constructor(
                             if (transcription.text.isEmpty()) {
                                 showToast("No speech detected.")
                             } else {
+                                // Always emit to event bus FIRST — history updates regardless
+                                // of whether text insertion or clipboard fallback is used.
+                                scope.launch(Dispatchers.IO) {
+                                    recordingEventBus.emitCompleted(transcription)
+                                }
                                 textInsertionHelper.insertTextIntoNode(
                                     text       = transcription.text,
                                     targetNode = nodeAtTapTime,

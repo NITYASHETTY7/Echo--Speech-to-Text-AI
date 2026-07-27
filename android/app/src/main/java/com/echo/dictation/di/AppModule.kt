@@ -28,21 +28,23 @@ object AppModule {
     @Provides
     @Singleton
     fun db(@ApplicationContext c: Context): EchoDatabase =
-        Room.databaseBuilder(c, EchoDatabase::class.java, "whisperflow.db").build()
+        Room.databaseBuilder(c, EchoDatabase::class.java, "whisperflow.db")
+            .fallbackToDestructiveMigration()
+            .build()
 
     @Provides
     fun dao(db: EchoDatabase) = db.transcriptions()
 
+    @Provides
+    fun versionDao(db: EchoDatabase) = db.versions()
+
+    @Provides
+    fun aiJobDao(db: EchoDatabase) = db.aiJobs()
+
+    @Provides
+    fun exportHistoryDao(db: EchoDatabase) = db.exportHistory()
+
     // ── OkHttpClient ──────────────────────────────────────────────────────────
-    //
-    // A single shared OkHttpClient with no auth interceptor.
-    // Authentication is added per-request by each SpeechProvider implementation
-    // so that credential changes take effect immediately without rebuilding the client.
-    //
-    // Timeouts:
-    //   connect  30 s — DNS + TLS on mobile
-    //   read    120 s — large audio uploads / AssemblyAI polling
-    //   write   120 s — uploading long recordings
 
     @Provides
     @Singleton
@@ -51,7 +53,6 @@ object AppModule {
         return OkHttpClient.Builder()
             .addInterceptor(
                 HttpLoggingInterceptor { message ->
-                    // Redact any Authorization or api-key header values before logging
                     val safe = message
                         .replace(Regex("(?i)(authorization:\\s*)[^\\r\\n]+"), "$1[REDACTED]")
                         .replace(Regex("(?i)(x-goog-api-key:\\s*)[^\\r\\n]+"), "$1[REDACTED]")
@@ -66,10 +67,6 @@ object AppModule {
     }
 
     // ── Provider infrastructure ───────────────────────────────────────────────
-    //
-    // ProviderKeyStore and ProviderSettings are @Inject-able singletons, so Hilt
-    // constructs them automatically. SpeechProviderFactory is also @Inject-able,
-    // but we explicitly provide it here so it receives the shared OkHttpClient.
 
     @Provides
     @Singleton

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "940458102434",
+    "project_id": "echo-mirai",
+    "storage_bucket": "echo-mirai.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:940458102434:android:86bbb3ef12f0b43945d1fb",
+        "android_client_info": {
+          "package_name": "com.echo.dictation"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "940458102434-7ghb0t5gr81rlovt0968bng90hu8gv4l.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.echo.dictation",
+            "certificate_hash": "26d47b81d3ee996754349acb89eccafc0369aeb3"
+          }
+        },
+        {
+          "client_id": "940458102434-50c3uactb5okbu85r9ppoir4hpkoqeg2.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbjgoC3St1bqhhCnC18EpzJqRkSV0idNQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "940458102434-50c3uactb5okbu85r9ppoir4hpkoqeg2.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

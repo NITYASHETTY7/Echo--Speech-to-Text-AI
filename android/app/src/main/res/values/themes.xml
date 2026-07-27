@@ -1,19 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-        This is a Compose-only project — there is no Material Components XML library on the
-        classpath.  The XML theme is only used for window chrome (status bar, nav bar colours)
-        before Compose takes over the surface.  All M3 theming is done inside EchoTheme via
-        MaterialTheme in Theme.kt; nothing here needs MDC attrs.
+        Window-level XML theme — used only for system window chrome (status bar,
+        nav bar) before Compose takes over the surface.
+
+        All Material 3 / Echo design theming is done inside EchoTheme (Theme.kt).
+        This file MUST NOT impose any Light or Dark visual style on Compose content.
+
+        Parent: Theme.AppCompat.DayNight.NoActionBar
+        - Neutral: follows the system day/night configuration automatically.
+        - Does NOT force Light or Dark on the window background.
+        - Compose's EchoTheme (isSystemInDarkTheme()) takes full control of colors.
     -->
-    <style name="Theme.Echo" parent="android:style/Theme.Material.Light.NoActionBar">
-        <!-- Matches the Compose dark background so the window chrome is seamless -->
-        <item name="android:statusBarColor">@color/echo_background</item>
-        <item name="android:navigationBarColor">@color/echo_background</item>
-        <item name="android:windowBackground">@color/echo_background</item>
-        <!-- Light-on-dark icons: false = white icons on the dark bar -->
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:colorAccent">@color/echo_primary</item>
+    <style name="Theme.Echo" parent="android:Theme.DeviceDefault.NoActionBar">
+        <!--
+            Use a transparent window background so Compose's Surface fills
+            the window without a color flash on launch.
+            Both light and dark mode will see the Compose background immediately.
+        -->
+        <item name="android:windowBackground">@color/window_background</item>
+
+        <!--
+            Status bar: transparent so Compose can draw edge-to-edge.
+            Icon color (light/dark) is controlled per-variant below.
+        -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+
+        <!--
+            Light mode: dark icons on light status/nav bar.
+            Overridden to false in values-night/themes.xml for dark mode.
+        -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+
         <item name="android:fontFamily">sans-serif</item>
     </style>
 </resources>

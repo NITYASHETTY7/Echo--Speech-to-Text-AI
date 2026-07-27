@@ -46,8 +46,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Settings
@@ -92,24 +95,33 @@ import com.echo.dictation.core.permission.PermissionManager
 import com.echo.dictation.domain.model.Transcription
 import com.echo.dictation.domain.repository.TranscriptionRepository
 import com.echo.dictation.presentation.theme.CardColor
+import com.echo.dictation.presentation.theme.CormorantGaramondSemiBold
 import com.echo.dictation.presentation.theme.OnSurfaceVariant
+import com.echo.dictation.presentation.theme.Primary
 import com.echo.dictation.presentation.theme.PrimaryColor
 import com.echo.dictation.presentation.theme.PrimaryVariant
 import com.echo.dictation.service.overlay.PillOverlayService
 import com.echo.dictation.speech.provider.ProviderKeyStore
 import com.echo.dictation.speech.provider.ProviderSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
+
+import com.echo.dictation.data.local.db.TranscriptVersionDao
+import com.echo.dictation.domain.ai.VersionType
+import com.echo.dictation.domain.recording.RecordingEventBus
+import com.echo.dictation.domain.sync.SyncManager
+import com.echo.dictation.domain.sync.SyncState
 
 // ─── ViewModel ───────────────────────────────────────────────────────────────
 
@@ -119,6 +131,9 @@ class MainViewModel @Inject constructor(
     val permissions: PermissionManager,
     private val providerKeyStore: ProviderKeyStore,
     private val providerSettings: ProviderSettings,
+    private val versionDao: TranscriptVersionDao,
+    val syncManager: SyncManager,
+    private val recordingEventBus: RecordingEventBus,
 ) : ViewModel() {
     val history: StateFlow<List<Transcription>> = repository.history().stateIn(
         scope = viewModelScope,
@@ -126,8 +141,44 @@ class MainViewModel @Inject constructor(
         initialValue = emptyList()
     )
 
-    private val _uploadedTranscriptions = MutableSharedFlow<Transcription>(replay = 1)
-    val uploadedTranscriptions: SharedFlow<Transcription> = _uploadedTranscriptions
+    /** True when device has network connectivity. */
+    val isOnline: StateFlow<Boolean> = syncManager.isOnline
+
+    /** Cloud sync state — drives subtle indicators in the UI. */
+    val syncState: StateFlow<SyncState> = syncManager.syncState
+
+    /**
+     * Maps transcriptId → Pair(latestVersionType, latestVersionContent).
+     * Both values come from the SAME version row so the card preview text and
+     * badge always represent the identical transcript version — never mismatched.
+     *
+     * When no version exists (original only) → VersionType.Original + empty string
+     * (card falls back to transcription.text which is the persisted display text).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val latestVersionInfo: StateFlow<Map<String, Pair<VersionType, String>>> =
+        history.flatMapLatest { list ->
+            flow {
+                val map = list.associate { t ->
+                    val latest = versionDao.getLatestVersion(t.id)
+                    val type = latest?.versionType?.let {
+                        runCatching { VersionType.valueOf(it) }.getOrNull()
+                    } ?: VersionType.Original
+                    val content = latest?.content ?: ""
+                    t.id to (type to content)
+                }
+                emit(map)
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /**
+     * Emits every transcription that was saved to Room (from [PillController] via
+     * [RecordingEventBus]). Collected by [MainScreen] to auto-copy to clipboard and
+     * show a confirmation snackbar — regardless of whether text was pasted or
+     * fell back to clipboard.
+     */
+    val completedTranscriptions: SharedFlow<Transcription> =
+        recordingEventBus.completedTranscriptions
 
     /** True when the currently selected provider has an API key configured. */
     val providerConfigured: Boolean
@@ -135,12 +186,6 @@ class MainViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { repository.sync() }
-    }
-
-    fun uploadRecordedAudio(file: File, model: String = DEFAULT_MODEL) {
-        viewModelScope.launch {
-            repository.transcribe(file, model).onSuccess { _uploadedTranscriptions.emit(it) }
-        }
     }
 
     companion object {
@@ -157,7 +202,10 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val history: List<Transcription> by viewModel.history.collectAsState()
+    val latestVersionInfo by viewModel.latestVersionInfo.collectAsState()
     val overlayRunning by PillOverlayService.isRunning.collectAsState()
+    val isOnline by viewModel.isOnline.collectAsState()
+    val syncState by viewModel.syncState.collectAsState()
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     var selectedTranscription by remember { mutableStateOf<Transcription?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -196,14 +244,19 @@ fun MainScreen(
         accessibilityConnected = isAccessibilityServiceEnabled(context)
     }
 
-    // Auto-copy on upload and show snackbar
+    // Show confirmation snackbar for every completed transcription.
+    // PillController emits via RecordingEventBus whether the text was
+    // pasted into a field (text insertion succeeded) or copied to clipboard
+    // (clipboard fallback). The transcription is already persisted in Room
+    // by the time this fires — History is guaranteed to show it.
     LaunchedEffect(viewModel) {
-        viewModel.uploadedTranscriptions.collect { transcription ->
-            clipboard.setPrimaryClip(ClipData.newPlainText("Transcription", transcription.text))
-            snackbarHostState.showSnackbar(
-                message = "✓ Copied to clipboard",
-                duration = SnackbarDuration.Short
-            )
+        viewModel.completedTranscriptions.collect { transcription ->
+            if (transcription.text.isNotBlank()) {
+                snackbarHostState.showSnackbar(
+                    message  = "✓ Transcription saved",
+                    duration = SnackbarDuration.Short,
+                )
+            }
         }
     }
 
@@ -267,13 +320,14 @@ fun MainScreen(
                 )
             }
 
-            // ── History list / empty state ─────────────────────────────────
+            // ── History list / empty state / no-internet ──────────────────
             Box(modifier = Modifier.weight(1f)) {
-                if (history.isEmpty()) {
-                    EmptyState()
-                } else {
-                    HistoryList(
+                when {
+                    !isOnline -> NoInternetScreen(onRetry = { /* auto-retries via SyncManager network callback */ })
+                    history.isEmpty() -> EmptyState()
+                    else -> HistoryList(
                         items = history,
+                        latestVersionInfo = latestVersionInfo,
                         onCardClick = { selectedTranscription = it }
                     )
                 }
@@ -493,20 +547,76 @@ private fun MicPermissionBanner(onGrant: () -> Unit) {
     }
 }
 
+// ─── No internet screen ───────────────────────────────────────────────────────
+
+@Composable
+private fun NoInternetScreen(onRetry: () -> Unit) {
+    Box(
+        modifier         = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier            = Modifier.padding(horizontal = 40.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector        = Icons.Outlined.Mic,
+                    contentDescription = null,
+                    tint               = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier           = Modifier.size(36.dp),
+                )
+            }
+
+            Text(
+                text       = "No Internet Connection",
+                style      = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color      = MaterialTheme.colorScheme.onBackground,
+                textAlign  = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Text(
+                text      = "Echo requires an internet connection to transcribe speech and use AI features.\n\nPlease connect to the internet and try again.",
+                style     = MaterialTheme.typography.bodyMedium,
+                color     = OnSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+
+            Button(
+                onClick        = onRetry,
+                shape          = RoundedCornerShape(14.dp),
+                colors         = ButtonDefaults.buttonColors(containerColor = Primary),
+                contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp),
+            ) {
+                Text("Retry", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
 // ─── Empty state ─────────────────────────────────────────────────────────────
 
 @Composable
 private fun EmptyState() {
     Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 32.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.padding(40.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Large mic illustration
             Box(
                 modifier = Modifier
                     .size(96.dp)
@@ -514,39 +624,48 @@ private fun EmptyState() {
                     .background(
                         Brush.radialGradient(
                             listOf(
-                                PrimaryColor.copy(alpha = 0.20f),
-                                PrimaryVariant.copy(alpha = 0.08f)
+                                Primary.copy(alpha = 0.20f),
+                                PrimaryVariant.copy(alpha = 0.08f),
                             )
                         )
                     )
                     .border(
                         width = 1.dp,
                         brush = Brush.linearGradient(
-                            listOf(PrimaryColor.copy(alpha = 0.4f), PrimaryVariant.copy(alpha = 0.2f))
+                            listOf(
+                                Primary.copy(alpha = 0.4f),
+                                PrimaryVariant.copy(alpha = 0.2f),
+                            )
                         ),
-                        shape = CircleShape
+                        shape = CircleShape,
                     ),
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Mic,
+                    imageVector        = Icons.Outlined.Mic,
                     contentDescription = null,
-                    tint = PrimaryColor,
-                    modifier = Modifier.size(44.dp)
+                    tint               = Primary,
+                    modifier           = Modifier.size(44.dp),
                 )
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "No transcriptions yet",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "Start dictating to see your history.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.alpha(0.7f)
-            )
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text       = "No recordings yet",
+                    style      = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color      = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text     = "Your saved recordings will appear here.",
+                    style    = MaterialTheme.typography.bodyMedium,
+                    color    = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.alpha(0.7f),
+                )
+            }
         }
     }
 }
@@ -556,22 +675,84 @@ private fun EmptyState() {
 @Composable
 private fun HistoryList(
     items: List<Transcription>,
-    onCardClick: (Transcription) -> Unit
+    latestVersionInfo: Map<String, Pair<VersionType, String>>,
+    onCardClick: (Transcription) -> Unit,
 ) {
+    // Group by calendar date (epoch-day), preserving newest-first order
+    val grouped: List<Pair<Long, List<Transcription>>> = remember(items) {
+        items
+            .groupBy { epochDayOf(it.timestamp) }
+            .entries
+            .sortedByDescending { it.key }
+            .map { it.key to it.value.sortedByDescending { t -> t.timestamp } }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        itemsIndexed(items = items, key = { _, t -> t.id }) { index, transcription ->
-            AnimatedTranscriptionCard(
-                transcription = transcription,
-                index = index,
-                onClick = { onCardClick(transcription) }
-            )
+        grouped.forEachIndexed { groupIndex, (epochDay, transcriptions) ->
+            // ── Date header ──────────────────────────────────────────────
+            item(key = "header_$epochDay") {
+                DateHeader(
+                    epochDay = epochDay,
+                    modifier = if (groupIndex == 0) Modifier else Modifier.padding(top = 8.dp),
+                )
+            }
+
+            // ── Cards for this day ────────────────────────────────────────
+            itemsIndexed(
+                items = transcriptions,
+                key   = { _, t -> t.id },
+            ) { cardIndex, transcription ->
+                val info  = latestVersionInfo[transcription.id]
+                // Stagger animation offset: reset per group so every first card animates in
+                val globalIndex = grouped.take(groupIndex).sumOf { it.second.size } + cardIndex
+                AnimatedTranscriptionCard(
+                    transcription     = transcription,
+                    index             = globalIndex,
+                    latestVersionType = info?.first,
+                    latestVersionText = info?.second,
+                    onClick           = { onCardClick(transcription) },
+                )
+            }
         }
     }
 }
+
+// ─── Date header ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun DateHeader(epochDay: Long, modifier: Modifier = Modifier) {
+    val label = remember(epochDay) {
+        val todayEpoch     = epochDayOf(System.currentTimeMillis())
+        val yesterdayEpoch = todayEpoch - 1
+        when (epochDay) {
+            todayEpoch     -> "Today"
+            yesterdayEpoch -> "Yesterday"
+            else           -> {
+                val ms = epochDay * 24 * 60 * 60 * 1000L
+                SimpleDateFormat("MMM d, yyyy", Locale.ENGLISH).format(Date(ms))
+            }
+        }
+    }
+    Text(
+        text  = label,
+        style = MaterialTheme.typography.labelMedium.copy(
+            fontFamily    = CormorantGaramondSemiBold,
+            fontSize      = 20.sp,
+            fontWeight    = FontWeight.SemiBold,
+            letterSpacing = 0.sp,
+        ),
+        color    = MaterialTheme.colorScheme.onBackground,
+        modifier = modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp),
+    )
+}
+
+/** Returns the epoch-day (UTC midnight / 86400 s) for a timestamp. */
+private fun epochDayOf(timestamp: Long): Long =
+    java.util.concurrent.TimeUnit.MILLISECONDS.toDays(timestamp)
 
 // ─── Animated card ────────────────────────────────────────────────────────────
 
@@ -579,9 +760,10 @@ private fun HistoryList(
 private fun AnimatedTranscriptionCard(
     transcription: Transcription,
     index: Int,
-    onClick: () -> Unit
+    latestVersionType: VersionType?,
+    latestVersionText: String?,
+    onClick: () -> Unit,
 ) {
-    // Entrance: fade + slight upward slide, staggered by index
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
@@ -594,8 +776,10 @@ private fun AnimatedTranscriptionCard(
                 )
     ) {
         TranscriptionCard(
-            transcription = transcription,
-            onClick = onClick
+            transcription     = transcription,
+            latestVersionType = latestVersionType,
+            latestVersionText = latestVersionText,
+            onClick           = onClick,
         )
     }
 }
@@ -605,16 +789,25 @@ private fun AnimatedTranscriptionCard(
 @Composable
 private fun TranscriptionCard(
     transcription: Transcription,
-    onClick: () -> Unit
+    latestVersionType: VersionType?,
+    latestVersionText: String?,
+    onClick: () -> Unit,
 ) {
-    val context = LocalContext.current
+    // Single source of truth: if a non-Original version exists use its content,
+    // otherwise fall back to transcription.text (the persisted display text).
+    val showBadge = latestVersionType != null && latestVersionType != VersionType.Original
+    val previewText = if (showBadge && !latestVersionText.isNullOrBlank()) {
+        latestVersionText
+    } else {
+        transcription.text
+    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = ripple(color = PrimaryColor.copy(alpha = 0.12f)),
+                indication = ripple(color = Primary.copy(alpha = 0.12f)),
                 onClick = onClick
             ),
         shape = RoundedCornerShape(20.dp),
@@ -632,18 +825,17 @@ private fun TranscriptionCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.Top
         ) {
-            // Transcript icon badge
             Box(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(PrimaryColor.copy(alpha = 0.12f)),
+                    .background(Primary.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Outlined.RecordVoiceOver,
                     contentDescription = null,
-                    tint = PrimaryColor,
+                    tint = Primary,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -653,19 +845,57 @@ private fun TranscriptionCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    text = transcription.text,
+                    text = previewText,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = formatTimestamp(context, transcription.timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = OnSurfaceVariant,
-                    modifier = Modifier.alpha(0.8f)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = formatTimeOnly(transcription.timestamp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = OnSurfaceVariant,
+                        modifier = Modifier.alpha(0.8f)
+                    )
+
+                    // Badge shown only when a non-Original AI version exists;
+                    // type and preview text are from the same version row.
+                    if (showBadge) {
+                        AiBadge(versionType = latestVersionType!!)
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun AiBadge(versionType: VersionType) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = Primary.copy(alpha = 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.AutoAwesome,
+                contentDescription = null,
+                tint = Primary,
+                modifier = Modifier.size(10.dp)
+            )
+            Text(
+                text = versionType.displayName,
+                style = MaterialTheme.typography.labelSmall,
+                color = Primary,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -709,7 +939,7 @@ private fun BottomActionBar(
                     Text(
                         text = if (overlayRunning) "ON" else "OFF",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (overlayRunning) PrimaryColor else OnSurfaceVariant,
+                        color = if (overlayRunning) Primary else OnSurfaceVariant,
                         modifier = Modifier.alpha(if (overlayRunning) 1f else 0.7f)
                     )
                 }
@@ -735,7 +965,7 @@ private fun BottomActionBar(
                     onClick = onToggleOverlay,
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = PrimaryColor,
+                        containerColor = Primary,
                         contentColor   = MaterialTheme.colorScheme.onPrimary
                     ),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
@@ -785,7 +1015,7 @@ private fun MicStatusIndicator(active: Boolean) {
                     .scale(pulseScale)
                     .alpha(pulseAlpha)
                     .clip(CircleShape)
-                    .background(PrimaryColor)
+                    .background(Primary)
             )
         }
         // Solid dot
@@ -793,7 +1023,7 @@ private fun MicStatusIndicator(active: Boolean) {
             modifier = Modifier
                 .size(14.dp)
                 .clip(CircleShape)
-                .background(if (active) PrimaryColor else OnSurfaceVariant.copy(alpha = 0.4f))
+                .background(if (active) Primary else OnSurfaceVariant.copy(alpha = 0.4f))
         )
     }
 }
@@ -820,5 +1050,13 @@ internal fun formatTimestamp(context: Context, timestamp: Long): String {
         .replace("PM", "pm")
     return context.getString(R.string.history_timestamp_format, date, time)
 }
+
+/** Returns only the time component, e.g. "3:08 pm" — used on history cards. */
+private fun formatTimeOnly(timestamp: Long): String =
+    SimpleDateFormat("h:mm a", Locale.ENGLISH)
+        .format(Date(timestamp))
+        .replace("AM", "am")
+        .replace("PM", "pm")
+
 
 
