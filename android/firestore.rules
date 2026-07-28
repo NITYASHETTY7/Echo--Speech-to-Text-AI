@@ -8,18 +8,17 @@ rules_version = '2';
 //  Derived : by direct audit of SyncManagerImpl.kt + FirestoreUserService.kt
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  ⚠  READ THIS BEFORE PUBLISHING  ⚠
+//  COMPLETENESS
 //
-//  Publishing a ruleset REPLACES the entire deployed ruleset. Your current
-//  deployment also contains rules for `history`, `feedback` and `events`.
-//  Those collections are NOT written by this Android app (verified by
-//  exhaustive source search), so their schemas are unknown to this file.
+//  This file is the COMPLETE ruleset and is safe to publish as-is.
+//  Publishing replaces the entire deployed ruleset, so it contains BOTH:
 //
-//  → Paste your existing `history`, `feedback` and `events` blocks into the
-//    "LEGACY / NON-ANDROID COLLECTIONS" section at the bottom BEFORE you
-//    publish, otherwise those collections become deny-all and whichever
-//    client uses them will start failing with PERMISSION_DENIED.
+//    • the Android collections
+//        users, transcripts, transcriptVersions, aiJobs, userPreferences
+//    • the pre-existing non-Android collections, carried over verbatim
+//        history, feedback, events
 //
+//  No further edits are required before publishing.
 // ─────────────────────────────────────────────────────────────────────────────
 //  AUTHORISATION MODEL
 //
@@ -470,36 +469,61 @@ service cloud.firestore {
     // ═══════════════════════════════════════════════════════════════════════
     //  LEGACY / NON-ANDROID COLLECTIONS
     //
-    //  ⚠ REQUIRED ACTION BEFORE PUBLISHING ⚠
+    //  These three collections are NOT touched by the com.echo.dictation
+    //  Android client — verified by exhaustive search for `.collection(`,
+    //  `FirebaseFirestore.getInstance()`, `.document(`, `.set(`, `.add(`,
+    //  `.batch(`. They belong to a different client (web/admin console).
     //
-    //  Your currently deployed ruleset contains rules for `history`,
-    //  `feedback` and `events`. NO code in the com.echo.dictation Android app
-    //  reads or writes these collections — verified by exhaustive search for
-    //  `.collection(`, `FirebaseFirestore.getInstance()`, `.document(`,
-    //  `.set(`, `.add(`, `.batch(`. They belong to a different client.
+    //  The blocks below are carried over VERBATIM from the previously deployed
+    //  ruleset. They are intentionally NOT refactored to use the helper
+    //  functions above, and their conditions are byte-for-byte unchanged, so
+    //  the behaviour of history / feedback / events is provably identical
+    //  before and after this deployment.
     //
-    //  Because their schemas are unknown here, they are intentionally NOT
-    //  reproduced. Publishing this file as-is makes them deny-all.
-    //
-    //  → Copy your existing three blocks from
-    //      Firebase Console → Firestore Database → Rules
-    //    and paste them below, then publish.
-    //
-    //  Example shape only — DO NOT USE WITHOUT VERIFYING against the real
-    //  schema of each collection:
-    //
-    //  match /history/{docId} {
-    //    allow read, write: if isSignedIn() && resource.data.ownerUid == uid();
-    //  }
-    //  match /feedback/{docId} {
-    //    allow create: if isSignedIn();
-    //    allow read:   if isSignedIn() && resource.data.ownerUid == uid();
-    //  }
-    //  match /events/{docId} {
-    //    allow create: if isSignedIn();
-    //    allow read:   if false;
-    //  }
+    //  Path-collision audit: none of these paths overlap the Android
+    //  collections (users, transcripts, transcriptVersions, aiJobs,
+    //  userPreferences). No duplicate `match` path exists in this file.
     // ═══════════════════════════════════════════════════════════════════════
+
+    // ── history/{userId}/** ────────────────────────────────────────────────
+    //  UID-KEYED with a recursive wildcard: ownership is proven by the second
+    //  path segment, so every document beneath history/{userId} is reachable
+    //  only by that user. This is a different pattern from the Android
+    //  collections (which authorise on an `ownerUid` field) because history
+    //  documents are nested under the owner's UID rather than carrying it.
+    //
+    //  `{document=**}` is a recursive wildcard, so this single block also
+    //  covers any current or future subcollections under history/{userId}.
+    //  Carried over verbatim — do not narrow it to a single segment or
+    //  existing nested data becomes unreachable.
+    match /history/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ── feedback/{document} ────────────────────────────────────────────────
+    //  Append-only submission sink. Any authenticated user may create a
+    //  feedback document; nobody may read, update or delete it from a client.
+    //  `allow read: if false` blocks both `get` and `list`. `update` and
+    //  `delete` are absent, which denies them by default.
+    //
+    //  Note for future review (NOT changed here, since behaviour must be
+    //  preserved): `create` performs no field validation and no ownership
+    //  stamping, so a signed-in client can write arbitrary document shapes.
+    //  If you later want that tightened, do it as a separate, tested change.
+    match /feedback/{document} {
+      allow create: if request.auth != null;
+      allow read: if false;
+    }
+
+    // ── events/{document} ─────────────────────────────────────────────────
+    //  Append-only analytics sink, same shape as feedback: authenticated
+    //  clients may write events, no client may ever read them back.
+    //  Reads are intended to happen server-side via the Admin SDK, which
+    //  bypasses these rules.
+    match /events/{document} {
+      allow create: if request.auth != null;
+      allow read: if false;
+    }
 
 
     // ═══════════════════════════════════════════════════════════════════════

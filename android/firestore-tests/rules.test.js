@@ -185,6 +185,58 @@ const user = (uid, over = {}) => ({
   await check('delete denied',
     assertFails(deleteDoc(doc(a, 'users/' + UID_A))));
 
+  results.push('\n── history (legacy, UID-keyed + recursive wildcard) ──');
+  await check('owner write to nested doc',
+    assertSucceeds(setDoc(doc(a, 'history/' + UID_A + '/items/i1'), { note: 'x' })));
+  await check('owner read nested doc',
+    assertSucceeds(getDoc(doc(a, 'history/' + UID_A + '/items/i1'))));
+  await check('owner write DEEPLY nested doc (recursive wildcard)',
+    assertSucceeds(setDoc(doc(a, 'history/' + UID_A + '/items/i1/sub/s1'), { note: 'y' })));
+  await check('owner LIST own subcollection',
+    assertSucceeds(getDocs(query(collection(a, 'history/' + UID_A + '/items')))));
+  await check('other-user write denied',
+    assertFails(setDoc(doc(b, 'history/' + UID_A + '/items/i2'), { note: 'z' })));
+  await check('other-user read denied',
+    assertFails(getDoc(doc(b, 'history/' + UID_A + '/items/i1'))));
+  await check('unauthenticated read denied',
+    assertFails(getDoc(doc(anon, 'history/' + UID_A + '/items/i1'))));
+  await check('owner delete own nested doc allowed (write includes delete)',
+    assertSucceeds(deleteDoc(doc(a, 'history/' + UID_A + '/items/i1/sub/s1'))));
+
+  results.push('\n── feedback (legacy, append-only sink) ──');
+  await check('authenticated create',
+    assertSucceeds(setDoc(doc(a, 'feedback/f1'), { message: 'great app' })));
+  await check('unauthenticated create denied',
+    assertFails(setDoc(doc(anon, 'feedback/f2'), { message: 'spam' })));
+  await check('read denied even for the creator',
+    assertFails(getDoc(doc(a, 'feedback/f1'))));
+  await check('LIST denied',
+    assertFails(getDocs(query(collection(a, 'feedback')))));
+  await check('update denied',
+    assertFails(setDoc(doc(a, 'feedback/f1'), { message: 'edited' }, { merge: true })));
+  await check('delete denied',
+    assertFails(deleteDoc(doc(a, 'feedback/f1'))));
+
+  results.push('\n── events (legacy, append-only sink) ──');
+  await check('authenticated create',
+    assertSucceeds(setDoc(doc(a, 'events/e1'), { name: 'app_open' })));
+  await check('unauthenticated create denied',
+    assertFails(setDoc(doc(anon, 'events/e2'), { name: 'fake' })));
+  await check('read denied',
+    assertFails(getDoc(doc(a, 'events/e1'))));
+  await check('LIST denied',
+    assertFails(getDocs(query(collection(a, 'events')))));
+  await check('update denied',
+    assertFails(setDoc(doc(a, 'events/e1'), { name: 'edited' }, { merge: true })));
+  await check('delete denied',
+    assertFails(deleteDoc(doc(a, 'events/e1'))));
+
+  results.push('\n── cross-collection isolation ──');
+  await check('history rule does NOT leak into transcripts',
+    assertFails(getDocs(query(collection(a, 'transcripts'), where('ownerUid', '==', UID_B)))));
+  await check('feedback open-create does NOT leak into aiJobs',
+    assertFails(setDoc(doc(a, 'aiJobs/loose'), { anything: true })));
+
   results.push('\n── default deny ──');
   await check('undeclared collection write denied',
     assertFails(setDoc(doc(a, 'randomCollection/x'), { ownerUid: UID_A })));
