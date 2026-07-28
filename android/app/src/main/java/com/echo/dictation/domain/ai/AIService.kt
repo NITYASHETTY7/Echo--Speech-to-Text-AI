@@ -14,6 +14,7 @@ class AIService @Inject constructor(
     private val promptRepository: PromptTemplateRepository,
     private val aiRepository: AIRepository,
     private val aiJobRepository: AIJobRepository,
+    private val providerFactory: AIProviderFactory,
 ) {
 
     /**
@@ -105,8 +106,8 @@ class AIService @Inject constructor(
                     transcriptId = transcriptId,
                     versionType  = VersionType.AutoEnhanced,
                     createdAt    = System.currentTimeMillis(),
-                    provider     = "Groq",
-                    model        = "llama-3.3-70b-versatile",
+                    provider     = safeProviderName(),
+                    model        = safeModelName(),
                     content      = enhancedText,
                     metadata     = mapOf("source" to "auto_enhance"),
                 )
@@ -246,8 +247,8 @@ Return ONLY the translated text with no commentary or labels.""".trimIndent()
                 transcriptId = transcriptId,
                 versionType  = VersionType.Translation,
                 createdAt    = System.currentTimeMillis(),
-                provider     = "Groq",
-                model        = "llama-3.3-70b-versatile",
+                provider     = safeProviderName(),
+                model        = safeModelName(),
                 content      = translatedText,
                 metadata     = mapOf("target_language" to targetLanguage),
             )
@@ -267,6 +268,14 @@ Return ONLY the translated text with no commentary or labels.""".trimIndent()
 
     fun getLatestJobForTranscript(transcriptId: String): Flow<AIJob?> =
         aiJobRepository.observeLatestJobForTranscript(transcriptId)
+
+    // ── Provider helpers ──────────────────────────────────────────────────────
+
+    private fun safeProviderName(): String =
+        runCatching { providerFactory.currentProviderDisplayName() }.getOrDefault("Unknown")
+
+    private fun safeModelName(): String =
+        runCatching { providerFactory.getProvider().defaultModel }.getOrDefault("default")
 
     companion object {
         private const val TAG = "AIService"

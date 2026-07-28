@@ -1,0 +1,514 @@
+rules_version = '2';
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Echo — Cloud Firestore Security Rules  (PRODUCTION)
+//
+//  Project : echo-mirai  (project_number 940458102434)
+//  Client  : com.echo.dictation (Android)
+//  Derived : by direct audit of SyncManagerImpl.kt + FirestoreUserService.kt
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  ⚠  READ THIS BEFORE PUBLISHING  ⚠
+//
+//  Publishing a ruleset REPLACES the entire deployed ruleset. Your current
+//  deployment also contains rules for `history`, `feedback` and `events`.
+//  Those collections are NOT written by this Android app (verified by
+//  exhaustive source search), so their schemas are unknown to this file.
+//
+//  → Paste your existing `history`, `feedback` and `events` blocks into the
+//    "LEGACY / NON-ANDROID COLLECTIONS" section at the bottom BEFORE you
+//    publish, otherwise those collections become deny-all and whichever
+//    client uses them will start failing with PERMISSION_DENIED.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  AUTHORISATION MODEL
+//
+//  Two distinct patterns are in use, because the app uses two document-naming
+//  schemes:
+//
+//  1. OWNER-FIELD collections — document ID is a random UUID, so ownership
+//     cannot be derived from the path. Every document carries an `ownerUid`
+//     field equal to the writer's Firebase Auth UID.
+//         transcripts, transcriptVersions, aiJobs
+//
+//  2. UID-KEYED collections — the document ID *is* the user's UID, so
+//     ownership is proven by the path itself.
+//         users, userPreferences
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  QUERY SATISFIABILITY (why `ownerUid` filters are mandatory client-side)
+//
+//  For `list` operations Firestore does NOT filter by rule. It rejects the
+//  entire query unless the query is *provably* limited to documents the rule
+//  permits. A rule of the form
+//        allow list: if resource.data.ownerUid == request.auth.uid
+//  is only satisfiable by a query that carries the matching equality filter:
+//        collection("transcripts").whereEqualTo("ownerUid", uid)
+//
+//  The Android client does exactly this in all four list queries:
+//    • restoreRecentHistory()   transcripts        whereEqualTo(ownerUid)
+//    • restoreRecentHistory()   transcriptVersions whereEqualTo(ownerUid)
+//    • downloadRemoteUpdates()  transcripts        whereEqualTo(ownerUid)
+//    • downloadRemoteUpdates()  transcriptVersions whereEqualTo(ownerUid)
+//
+//  A previous implementation queried transcriptVersions with
+//  whereIn("transcriptId", …) and NO ownerUid filter. That is unsatisfiable
+//  against an ownerUid rule and Firestore rejected the whole query. The client
+//  now filters ownerUid server-side and transcriptId client-side.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  COMPOSITE INDEXES: NONE REQUIRED
+//
+//  Every server-side query uses exactly ONE equality filter and no orderBy,
+//  which is served by Firestore's automatic single-field indexes.
+//  Time-window narrowing (48 h incremental sync) and transcriptId matching are
+//  both performed client-side specifically to avoid composite indexes.
+//  Do not add range/orderBy clauses to these queries without also creating the
+//  corresponding composite index.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  WRITE SEMANTICS
+//
+//  All cloud writes go through `set(map, SetOptions.merge())`, which Firestore
+//  evaluates as:
+//      • `create` when the document does not yet exist
+//      • `update` when it does
+//  On a merge-update, `request.resource.data` is the POST-MERGE document, so
+//  every required field is present and validation below is safe for both cases.
+//
+//  DELETES: the client never calls DocumentReference.delete(). Removal is a
+//  SOFT delete — `deleted` is flipped to true and pushed as a normal update
+//  (see TranscriptionDao.markDeleted + restoreRecentHistory skipping
+//  deleted==true). Hard deletes are therefore DENIED under least privilege.
+//  Account/data erasure should be performed with the Admin SDK, which bypasses
+//  these rules.
+//
+//  Field types: Kotlin `Long` serialises to a Firestore 64-bit integer, so
+//  `is int` is the correct assertion for all timestamp/counter fields.
+//  Kotlin nullable types (`String?`, `Long?`) serialise to Firestore `null`, so
+//  those fields are validated as "absent OR null OR of the expected type".
+// ═════════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  SHARED HELPERS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // A request must carry a verified Firebase Auth token.
+    // Anonymous sign-in is not used by Echo, but an anonymous user would still
+    // satisfy this; ownership checks below keep such a user confined to its own
+    // documents, so no cross-tenant leak is possible.
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    // ── Owner-field pattern helpers ────────────────────────────────────────
+
+    // Caller owns the document ALREADY STORED in Firestore.
+    // Used for get / list / update / delete, where `resource` is populated.
+    function ownsStored() {
+      return isSignedIn()
+        && resource != null
+        && resource.data.ownerUid == uid();
+    }
+
+    // Caller owns the document BEING WRITTEN.
+    // Used for create / update, where `request.resource` is populated.
+    // Blocks a signed-in user from planting a document owned by someone else.
+    function ownsIncoming() {
+      return isSignedIn()
+        && request.resource.data.ownerUid == uid();
+    }
+
+    // `ownerUid` and `id` are identity fields and must never change once set.
+    // Without this, user A could take over user B's document on update.
+    function identityImmutable() {
+      return request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.id == resource.data.id;
+    }
+
+    // ── Nullable-field helpers ─────────────────────────────────────────────
+    // Kotlin `String?` / `Long?` arrive as Firestore null. Treat "absent",
+    // "null" and "correct type" as all valid; anything else is rejected.
+
+    function nullableString(data, field) {
+      return !(field in data) || data[field] == null || data[field] is string;
+    }
+
+    function nullableInt(data, field) {
+      return !(field in data) || data[field] == null || data[field] is int;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  users/{userId}
+    //
+    //  Written by: FirestoreUserService.createOrUpdateUser()
+    //  Read by   : FirestoreUserService.getUser()
+    //  Document ID = Firebase Auth UID  →  ownership proven by path.
+    //  NOTE: this collection has NO `ownerUid` field; it uses `uid` instead.
+    //
+    //  Field map (createOrUpdateUser):
+    //    uid         String   (must equal the document ID)
+    //    displayName String?  nullable
+    //    email       String?  nullable
+    //    photoUrl    String?  nullable
+    //    lastLogin   Long
+    //    createdAt   Long     written only on first create; present post-merge
+    // ═══════════════════════════════════════════════════════════════════════
+    match /users/{userId} {
+
+      function isSelf() {
+        return isSignedIn() && userId == uid();
+      }
+
+      function userFieldsValid() {
+        let d = request.resource.data;
+        return d.keys().hasAll(['uid', 'lastLogin'])
+          && d.uid is string
+          && d.uid == userId              // uid field must agree with the path
+          && d.lastLogin is int
+          && nullableString(d, 'displayName')
+          && nullableString(d, 'email')
+          && nullableString(d, 'photoUrl')
+          && nullableInt(d, 'createdAt');
+      }
+
+      // Single-document get: docRef.get() before create/update, and getUser().
+      allow get: if isSelf();
+
+      // No code ever queries this collection. Deny list so a signed-in user
+      // can never enumerate the user directory.
+      allow list: if false;
+
+      // First sign-in: docRef.set(data) — full write, includes createdAt.
+      allow create: if isSelf() && userFieldsValid();
+
+      // Subsequent sign-ins: docRef.set(data, merge) — refreshes lastLogin etc.
+      // `uid` is pinned by userFieldsValid() (must equal the path), so identity
+      // cannot drift.
+      allow update: if isSelf() && userFieldsValid();
+
+      // Client never deletes user documents. Use the Admin SDK for erasure.
+      allow delete: if false;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  transcripts/{transcriptId}
+    //
+    //  Written by: SyncManagerImpl.uploadPendingChanges()  (set + merge)
+    //  Read by   : restoreRecentHistory()   whereEqualTo("ownerUid", uid)
+    //              downloadRemoteUpdates()  whereEqualTo("ownerUid", uid)
+    //  Document ID = client-generated UUID  →  ownership via `ownerUid` field.
+    //
+    //  Field map (uploadPendingChanges, transcripts loop):
+    //    ownerUid    String   == request.auth.uid
+    //    id          String   mirrors the document ID
+    //    text        String   transcript body
+    //    timestamp   Long     creation time (epoch ms)
+    //    model       String   STT model used
+    //    audioPath   String?  local device path — NULLABLE
+    //    userId      String   legacy mirror of ownerUid
+    //    syncVersion Int
+    //    updatedAt   Long     epoch ms, drives incremental sync
+    //    deleted     Boolean  soft-delete flag
+    // ═══════════════════════════════════════════════════════════════════════
+    match /transcripts/{transcriptId} {
+
+      // Required keys are asserted with keys().hasAll(...) BEFORE any field is
+      // dereferenced. Without this, a write omitting a field produces a rules
+      // *evaluation error* rather than a clean `false`. Both deny the write, but
+      // the explicit form is auditable and shows up correctly in the Rules
+      // Playground / emulator output.
+      function transcriptFieldsValid() {
+        let d = request.resource.data;
+        return d.keys().hasAll([
+             'ownerUid', 'id', 'text', 'timestamp', 'model',
+             'userId', 'syncVersion', 'updatedAt', 'deleted'
+           ])
+          && d.ownerUid is string
+          && d.ownerUid.size() > 0
+          && d.id is string
+          && d.text is string
+          && d.timestamp is int
+          && d.model is string
+          && d.userId is string
+          && d.syncVersion is int
+          && d.updatedAt is int
+          && d.deleted is bool
+          && nullableString(d, 'audioPath');
+      }
+
+      // Single-document read. Not currently used by the client, but harmless
+      // and owner-scoped; keeps `get` consistent with `list`.
+      allow get: if ownsStored();
+
+      // Collection query. Satisfiable ONLY by a query carrying
+      // whereEqualTo("ownerUid", <caller uid>) — which the client always does.
+      allow list: if ownsStored();
+
+      // First upload of a transcript (set+merge on a non-existent document).
+      allow create: if ownsIncoming() && transcriptFieldsValid();
+
+      // Re-upload / edit / soft-delete. Caller must own both the stored and the
+      // incoming document, and may not rewrite the identity fields.
+      allow update: if ownsStored()
+                    && ownsIncoming()
+                    && identityImmutable()
+                    && transcriptFieldsValid();
+
+      // Soft delete only — see WRITE SEMANTICS header.
+      allow delete: if false;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  transcriptVersions/{versionId}
+    //
+    //  Written by: SyncManagerImpl.uploadPendingChanges()  (set + merge)
+    //  Read by   : restoreRecentHistory()   whereEqualTo("ownerUid", uid)
+    //              downloadRemoteUpdates()  whereEqualTo("ownerUid", uid)
+    //  Document ID = client-generated UUID  →  ownership via `ownerUid` field.
+    //
+    //  Holds the AI-generated variants of a transcript (Original,
+    //  GrammarCorrected, AutoEnhanced, Professional, Summary, Email,
+    //  BulletPoints, Translation, Custom …).
+    //
+    //  Field map (uploadPendingChanges, versions loop) — all NON-nullable:
+    //    ownerUid     String  == request.auth.uid
+    //    id           String  mirrors the document ID
+    //    transcriptId String  FK → transcripts.id
+    //    versionType  String  VersionType enum name
+    //    createdAt    Long
+    //    provider     String  active AI provider display name
+    //    model        String  active AI model
+    //    content      String  generated text
+    //    metadataJson String  JSON blob, defaults to "{}"
+    //    syncVersion  Int
+    //    updatedAt    Long
+    //    deleted      Boolean
+    // ═══════════════════════════════════════════════════════════════════════
+    match /transcriptVersions/{versionId} {
+
+      function versionFieldsValid() {
+        let d = request.resource.data;
+        return d.keys().hasAll([
+             'ownerUid', 'id', 'transcriptId', 'versionType', 'createdAt',
+             'provider', 'model', 'content', 'metadataJson',
+             'syncVersion', 'updatedAt', 'deleted'
+           ])
+          && d.ownerUid is string
+          && d.ownerUid.size() > 0
+          && d.id is string
+          && d.transcriptId is string
+          && d.versionType is string
+          && d.createdAt is int
+          && d.provider is string
+          && d.model is string
+          && d.content is string
+          && d.metadataJson is string
+          && d.syncVersion is int
+          && d.updatedAt is int
+          && d.deleted is bool;
+      }
+
+      allow get:  if ownsStored();
+
+      // Satisfiable by whereEqualTo("ownerUid", uid). The client deliberately
+      // does NOT filter on transcriptId server-side — that query shape would be
+      // unsatisfiable here and would also demand a composite index.
+      allow list: if ownsStored();
+
+      allow create: if ownsIncoming() && versionFieldsValid();
+
+      allow update: if ownsStored()
+                    && ownsIncoming()
+                    && identityImmutable()
+                    && versionFieldsValid();
+
+      allow delete: if false;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  aiJobs/{jobId}
+    //
+    //  Written by: SyncManagerImpl.uploadPendingChanges()  (set + merge)
+    //  Read by   : NOTHING. This collection is write-only telemetry describing
+    //              AI job lifecycle. No client query exists, so `list` is
+    //              denied under least privilege. `get` is allowed owner-scoped
+    //              so future diagnostics do not require a rules change.
+    //  Document ID = client-generated UUID  →  ownership via `ownerUid` field.
+    //
+    //  Field map (uploadPendingChanges, jobs loop):
+    //    ownerUid         String   == request.auth.uid
+    //    id               String   mirrors the document ID
+    //    transcriptId     String   FK → transcripts.id
+    //    versionType      String   VersionType enum name
+    //    promptTemplateId String?  NULLABLE (null for custom prompts)
+    //    provider         String
+    //    model            String
+    //    status           String   JobStatus enum name
+    //    retryCount       Int
+    //    createdAt        Long
+    //    startedAt        Long?    NULLABLE
+    //    completedAt      Long?    NULLABLE
+    //    processingTimeMs Long?    NULLABLE
+    //    errorMessage     String?  NULLABLE
+    //    syncVersion      Int
+    //    updatedAt        Long
+    //    deleted          Boolean
+    // ═══════════════════════════════════════════════════════════════════════
+    match /aiJobs/{jobId} {
+
+      function jobFieldsValid() {
+        let d = request.resource.data;
+        return d.keys().hasAll([
+             'ownerUid', 'id', 'transcriptId', 'versionType', 'provider',
+             'model', 'status', 'retryCount', 'createdAt',
+             'syncVersion', 'updatedAt', 'deleted'
+           ])
+          && d.ownerUid is string
+          && d.ownerUid.size() > 0
+          && d.id is string
+          && d.transcriptId is string
+          && d.versionType is string
+          && d.provider is string
+          && d.model is string
+          && d.status is string
+          && d.retryCount is int
+          && d.createdAt is int
+          && d.syncVersion is int
+          && d.updatedAt is int
+          && d.deleted is bool
+          && nullableString(d, 'promptTemplateId')
+          && nullableString(d, 'errorMessage')
+          && nullableInt(d, 'startedAt')
+          && nullableInt(d, 'completedAt')
+          && nullableInt(d, 'processingTimeMs');
+      }
+
+      allow get: if ownsStored();
+
+      // No query exists in the client. Deny enumeration.
+      allow list: if false;
+
+      allow create: if ownsIncoming() && jobFieldsValid();
+
+      allow update: if ownsStored()
+                    && ownsIncoming()
+                    && identityImmutable()
+                    && jobFieldsValid();
+
+      allow delete: if false;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  userPreferences/{userId}
+    //
+    //  Written by: SyncManagerImpl.syncUserPreferences()  (set + merge)
+    //  Read by   : SyncManagerImpl.syncUserPreferences()  (ref.get())
+    //  Document ID = Firebase Auth UID  →  ownership proven by path,
+    //  AND the document additionally carries `ownerUid` for consistency with
+    //  the other synced collections. Both are enforced.
+    //
+    //  Field map (syncUserPreferences):
+    //    ownerUid                      String  == request.auth.uid == docId
+    //    grammarCorrectionEnabled      Boolean
+    //    autoEnhanceAfterTranscription Boolean
+    //    defaultRewriteStyle           String
+    //    defaultAiProvider             String
+    //    language                      String
+    //    theme                         String
+    //    updatedAt                     Long
+    // ═══════════════════════════════════════════════════════════════════════
+    match /userPreferences/{userId} {
+
+      function isSelf() {
+        return isSignedIn() && userId == uid();
+      }
+
+      function prefsFieldsValid() {
+        let d = request.resource.data;
+        return d.keys().hasAll([
+             'ownerUid', 'grammarCorrectionEnabled', 'autoEnhanceAfterTranscription',
+             'defaultRewriteStyle', 'defaultAiProvider', 'language', 'theme', 'updatedAt'
+           ])
+          && d.ownerUid is string
+          && d.ownerUid == userId          // field must agree with the path
+          && d.grammarCorrectionEnabled is bool
+          && d.autoEnhanceAfterTranscription is bool
+          && d.defaultRewriteStyle is string
+          && d.defaultAiProvider is string
+          && d.language is string
+          && d.theme is string
+          && d.updatedAt is int;
+      }
+
+      // ref.get() immediately after the merge-write, to pull remote overrides.
+      allow get: if isSelf();
+
+      // Never queried as a collection.
+      allow list: if false;
+
+      allow create: if isSelf() && prefsFieldsValid();
+      allow update: if isSelf() && prefsFieldsValid();
+
+      // Preferences are overwritten, never removed.
+      allow delete: if false;
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  LEGACY / NON-ANDROID COLLECTIONS
+    //
+    //  ⚠ REQUIRED ACTION BEFORE PUBLISHING ⚠
+    //
+    //  Your currently deployed ruleset contains rules for `history`,
+    //  `feedback` and `events`. NO code in the com.echo.dictation Android app
+    //  reads or writes these collections — verified by exhaustive search for
+    //  `.collection(`, `FirebaseFirestore.getInstance()`, `.document(`,
+    //  `.set(`, `.add(`, `.batch(`. They belong to a different client.
+    //
+    //  Because their schemas are unknown here, they are intentionally NOT
+    //  reproduced. Publishing this file as-is makes them deny-all.
+    //
+    //  → Copy your existing three blocks from
+    //      Firebase Console → Firestore Database → Rules
+    //    and paste them below, then publish.
+    //
+    //  Example shape only — DO NOT USE WITHOUT VERIFYING against the real
+    //  schema of each collection:
+    //
+    //  match /history/{docId} {
+    //    allow read, write: if isSignedIn() && resource.data.ownerUid == uid();
+    //  }
+    //  match /feedback/{docId} {
+    //    allow create: if isSignedIn();
+    //    allow read:   if isSignedIn() && resource.data.ownerUid == uid();
+    //  }
+    //  match /events/{docId} {
+    //    allow create: if isSignedIn();
+    //    allow read:   if false;
+    //  }
+    // ═══════════════════════════════════════════════════════════════════════
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  DEFAULT DENY
+    //
+    //  Firestore denies anything not explicitly allowed above. No catch-all
+    //  `match /{document=**}` rule is declared, deliberately: such a rule is
+    //  the most common source of accidental data exposure and would defeat the
+    //  per-collection least-privilege model established here.
+    // ═══════════════════════════════════════════════════════════════════════
+  }
+}

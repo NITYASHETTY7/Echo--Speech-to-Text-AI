@@ -27,8 +27,10 @@ interface SyncManager {
     suspend fun downloadRemoteUpdates(): Result<Unit>
     suspend fun syncUserPreferences(): Result<Unit>
     /**
-     * Restores only recent history (last 48h) from Firestore immediately after
-     * sign-in or on first launch after reinstall. Never blocks the UI.
+     * Full restore from Firestore for the signed-in user.
+     * Downloads ALL transcripts with no time filter so reinstall + login
+     * always recovers the complete history.
+     * Non-blocking — callers should launch this in a background scope.
      */
     suspend fun restoreRecentHistory(): Result<Unit>
 }

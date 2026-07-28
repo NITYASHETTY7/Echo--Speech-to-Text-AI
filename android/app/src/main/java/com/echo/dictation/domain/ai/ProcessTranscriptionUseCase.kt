@@ -74,17 +74,29 @@ class ProcessTranscriptionUseCase @Inject constructor(
             }
         }
 
-        // Step 5 — Immediately upload to Firestore if user is signed in and online.
-        // Runs on a background coroutine so it never blocks the caller.
-        // On failure the record stays syncStatus=PENDING and is retried by
-        // NetworkCallback.onAvailable() and the periodic WorkManager job.
-        if (isOnline && sessionManager.currentUser.value != null) {
+        // Step 5 — Immediately upload to Firestore if a user is authenticated.
+        // UID resolution mirrors SyncManagerImpl: FirebaseAuth is authoritative because
+        // it survives process death, whereas the in-memory session may not be populated.
+        val uid = sessionManager.currentUser.value?.uid
+            ?: runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+
+        Log.d("CloudSync", "ProcessTranscriptionUseCase: post-save upload check — " +
+                "isOnline=$isOnline resolvedUid=${uid ?: "NULL"}")
+
+        if (uid != null) {
             uploadScope.launch {
-                Log.d(TAG, "Immediate upload triggered for ${finalTranscription.id}")
+                Log.d("CloudSync", "ProcessTranscriptionUseCase: launching immediate upload " +
+                        "for transcription ${finalTranscription.id} (uid=$uid)")
                 syncManager.uploadPendingChanges()
-                    .onSuccess { Log.d(TAG, "Immediate upload succeeded for ${finalTranscription.id}") }
-                    .onFailure { ex -> Log.w(TAG, "Immediate upload failed (will retry): ${ex.message}") }
+                    .onSuccess { Log.d("CloudSync", "ProcessTranscriptionUseCase: upload SUCCESS for ${finalTranscription.id}") }
+                    .onFailure { ex ->
+                        Log.e("CloudSync", "ProcessTranscriptionUseCase: upload FAILED for " +
+                                "${finalTranscription.id} — row stays PENDING for retry", ex)
+                    }
             }
+        } else {
+            Log.w("CloudSync", "ProcessTranscriptionUseCase: upload SKIPPED — no authenticated user. " +
+                    "Row stays PENDING and will upload after sign-in.")
         }
 
         return Result.success(finalTranscription)

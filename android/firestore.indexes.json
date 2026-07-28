@@ -1,0 +1,26 @@
+{
+  "//": [
+    "Echo — Firestore composite index manifest.",
+    "",
+    "INTENTIONALLY EMPTY. Every server-side query issued by the Android client",
+    "uses exactly one equality filter and no orderBy clause, which is served by",
+    "Firestore's automatic single-field indexes:",
+    "",
+    "  transcripts         whereEqualTo('ownerUid', uid)   restoreRecentHistory()",
+    "  transcripts         whereEqualTo('ownerUid', uid)   downloadRemoteUpdates()",
+    "  transcriptVersions  whereEqualTo('ownerUid', uid)   restoreRecentHistory()",
+    "  transcriptVersions  whereEqualTo('ownerUid', uid)   downloadRemoteUpdates()",
+    "  users               document get by UID",
+    "  userPreferences     document get by UID",
+    "",
+    "The 48-hour incremental window (updatedAt) and transcriptId matching are",
+    "applied CLIENT-SIDE precisely so that no composite index is needed.",
+    "",
+    "If you later add a range filter or orderBy alongside the ownerUid equality",
+    "filter — e.g. whereEqualTo('ownerUid', uid).whereGreaterThanOrEqualTo('updatedAt', t)",
+    "— Firestore will fail with FAILED_PRECONDITION and you must add the",
+    "corresponding composite index here."
+  ],
+  "indexes": [],
+  "fieldOverrides": []
+}

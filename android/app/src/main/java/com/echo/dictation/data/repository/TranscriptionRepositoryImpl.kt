@@ -50,9 +50,21 @@ class TranscriptionRepositoryImpl @Inject constructor(
     private val sessionManager: SessionManager,
 ) : TranscriptionRepository {
 
-    /** Snapshot of the current user's UID for write operations. */
+    /**
+     * Snapshot of the current user's UID for write operations.
+     *
+     * Resolution order: in-memory session → [com.google.firebase.auth.FirebaseAuth]
+     * (persisted across process death) → "local".
+     *
+     * The FirebaseAuth fallback matters: if the session has not been populated yet
+     * for any reason, a signed-in user's transcription would otherwise be written
+     * with userId="local", making it invisible to the history Flow (which filters on
+     * userId) and preventing it from ever being attributed to the right owner.
+     */
     private val currentUserId: String
-        get() = sessionManager.currentUser.value?.uid ?: "local"
+        get() = sessionManager.currentUser.value?.uid
+            ?: runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+            ?: "local"
 
     override suspend fun transcribe(file: File, model: String): Result<Transcription> {
         Log.d(TAG, "╔══ PIPELINE START ══════════════════════════════════")
@@ -102,7 +114,7 @@ class TranscriptionRepositoryImpl @Inject constructor(
                 transcriptId = id,
                 versionType  = VersionType.Original,
                 createdAt    = item.timestamp,
-                provider     = providerSettings.selectedProvider.name,
+                provider     = providerSettings.selectedProvider.displayName,
                 model        = selectedModel,
                 content      = rawText,
                 metadata     = mapOf("source" to "stt"),
@@ -145,7 +157,9 @@ class TranscriptionRepositoryImpl @Inject constructor(
             sessionManager.currentUser,
             prefs.retentionFlow,
         ) { user, retentionDays ->
-            val userId = user?.uid ?: "local"
+            val userId = user?.uid
+                ?: runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+                ?: "local"
             val since  = if (retentionDays <= 0) 0L
                          else System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
             Log.d(TAG, "History resubscribing — userId=$userId retentionDays=$retentionDays since=$since")

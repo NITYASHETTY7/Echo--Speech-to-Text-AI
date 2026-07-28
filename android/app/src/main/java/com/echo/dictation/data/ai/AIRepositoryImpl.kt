@@ -6,6 +6,7 @@ import com.echo.dictation.data.local.db.toDomain
 import com.echo.dictation.data.local.db.toEntity
 import com.echo.dictation.domain.ai.AIError
 import com.echo.dictation.domain.ai.AIProvider
+import com.echo.dictation.domain.ai.AIProviderFactory
 import com.echo.dictation.domain.ai.AIRepository
 import com.echo.dictation.domain.ai.TranscriptVersion
 import kotlinx.coroutines.CancellationException
@@ -18,9 +19,15 @@ import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Delegates every AI text generation call to the provider returned by [AIProviderFactory.getProvider].
+ *
+ * The factory is resolved at call-time, not at construction-time, so switching the
+ * provider in Settings takes effect immediately for the next AI call — no restart required.
+ */
 @Singleton
 class AIRepositoryImpl @Inject constructor(
-    private val defaultProvider: AIProvider,
+    private val providerFactory: AIProviderFactory,
     private val versionDao: TranscriptVersionDao,
 ) : AIRepository {
 
@@ -32,13 +39,29 @@ class AIRepositoryImpl @Inject constructor(
     ): Result<String> {
         return try {
             withTimeout(TIMEOUT_MS) {
-                // Currently delegates to defaultProvider (Groq). Plug in dynamic providers map in future.
-                val provider = defaultProvider
-                val result = provider.generateCompletion(systemPrompt, userPrompt, model)
-                result.mapCatching { text ->
-                    if (text.isBlank()) throw AIError.MalformedResponse("Empty response returned from AI provider")
-                    text
+                // Resolve the active provider at call-time so Settings switches take
+                // effect immediately without any restart or re-injection.
+                val provider: AIProvider = try {
+                    providerFactory.getProvider()
+                } catch (unsupported: UnsupportedOperationException) {
+                    Log.e(TAG, "Selected provider does not support AI text generation: ${unsupported.message}")
+                    return@withTimeout Result.failure(
+                        AIError.Unknown(unsupported.message ?: "Selected provider does not support AI features")
+                    )
+                } catch (missingKey: IllegalStateException) {
+                    Log.e(TAG, "Provider missing API key: ${missingKey.message}")
+                    return@withTimeout Result.failure(
+                        AIError.InvalidApiKey(missingKey.message ?: "API key not configured")
+                    )
                 }
+
+                Log.d(TAG, "executePrompt via ${provider.name} (model=${model ?: provider.defaultModel})")
+
+                provider.generateCompletion(systemPrompt, userPrompt, model)
+                    .mapCatching { text ->
+                        if (text.isBlank()) throw AIError.MalformedResponse("Empty response returned from ${provider.name}")
+                        text
+                    }
             }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "AI execution timed out after $TIMEOUT_MS ms", e)
@@ -54,7 +77,8 @@ class AIRepositoryImpl @Inject constructor(
             Result.failure(AIError.Cancellation())
         } catch (e: IllegalStateException) {
             Log.e(TAG, "IllegalStateException during AI call: ${e.message}", e)
-            if (e.message?.contains("API key", ignoreCase = true) == true) {
+            if (e.message?.contains("API key", ignoreCase = true) == true ||
+                e.message?.contains("key is not configured", ignoreCase = true) == true) {
                 Result.failure(AIError.InvalidApiKey(e.message ?: "Invalid API key"))
             } else {
                 Result.failure(AIError.Unknown(e.message ?: "Illegal state error"))
@@ -87,6 +111,6 @@ class AIRepositoryImpl @Inject constructor(
 
     companion object {
         private const val TAG = "AIRepositoryImpl"
-        private const val TIMEOUT_MS = 30_000L // 30 seconds timeout
+        private const val TIMEOUT_MS = 30_000L
     }
 }

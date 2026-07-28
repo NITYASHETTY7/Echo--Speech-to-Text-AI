@@ -15,6 +15,7 @@ import com.echo.dictation.data.local.db.TranscriptVersionEntity
 import com.echo.dictation.domain.session.SessionManager
 import com.echo.dictation.domain.sync.SyncManager
 import com.echo.dictation.domain.sync.SyncState
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -53,6 +54,52 @@ class SyncManagerImpl @Inject constructor(
         registerNetworkCallback()
     }
 
+    /**
+     * Authoritative owner UID for all cloud operations.
+     *
+     * Resolution order:
+     *  1. [FirebaseAuth.currentUser] — persisted on disk by the Firebase SDK and
+     *     therefore valid immediately after process death / cold start.
+     *  2. [SessionManager.currentUser] — in-memory mirror.
+     *
+     * FirebaseAuth is checked FIRST because the in-memory session used to be
+     * populated only by a lazily-created singleton that frequently never ran.
+     * Relying on the session alone was the reason every upload aborted before
+     * reaching Firestore.
+     */
+    private fun resolveOwnerUid(): String? {
+        val fbUid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+        if (fbUid != null) return fbUid
+        val sessionUid = sessionManager.currentUser.value?.uid
+        if (sessionUid != null) {
+            Log.w(DIAG, "resolveOwnerUid: FirebaseAuth had no user; falling back to session uid=$sessionUid")
+        }
+        return sessionUid
+    }
+
+    /**
+     * Re-tags any transcription/version rows that were written while the session was
+     * unresolved (userId == "local") with the real owner UID.
+     *
+     * Without this, records created before the session fix stay invisible to the
+     * history Flow (which filters on userId) and are effectively orphaned.
+     */
+    private suspend fun backfillLocalRows(uid: String) {
+        val orphans = transcriptionDao.all().filter { it.userId == LOCAL_USER_ID }
+        if (orphans.isEmpty()) return
+        Log.w(DIAG, "backfillLocalRows: re-tagging ${orphans.size} orphaned 'local' rows → uid=$uid")
+        orphans.forEach { row ->
+            transcriptionDao.insert(
+                row.copy(
+                    userId     = uid,
+                    syncStatus = "PENDING",
+                    updatedAt  = System.currentTimeMillis(),
+                )
+            )
+            Log.d(DIAG, "  re-tagged transcription ${row.id} → uid=$uid, syncStatus=PENDING")
+        }
+    }
+
     private fun checkInitialNetwork(): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return false
@@ -62,21 +109,18 @@ class SyncManagerImpl @Inject constructor(
     }
 
     private fun registerNetworkCallback() {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
-
         cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Network available — triggering sync")
+                Log.d(DIAG, "NetworkCallback.onAvailable — isOnline → true, triggering sync")
                 _isOnline.value = true
                 syncScope.launch { triggerSync() }
             }
-
             override fun onLost(network: Network) {
-                Log.d(TAG, "Network lost")
+                Log.d(DIAG, "NetworkCallback.onLost — isOnline → false")
                 _isOnline.value = false
                 _syncState.value = SyncState.Offline
             }
@@ -86,73 +130,153 @@ class SyncManagerImpl @Inject constructor(
     // ── Full sync cycle ───────────────────────────────────────────────────────
 
     override suspend fun triggerSync(): Result<Unit> {
-        val user = sessionManager.currentUser.value
-        if (user == null) {
-            Log.d(TAG, "triggerSync: no user — skipping")
+        val fbUser = FirebaseAuth.getInstance().currentUser
+        val sessionUser = sessionManager.currentUser.value
+        Log.d(DIAG, "triggerSync() — FirebaseAuth.currentUser=${fbUser?.uid} " +
+                "sessionUser=${sessionUser?.uid} isOnline=${_isOnline.value}")
+
+        if (resolveOwnerUid() == null) {
+            Log.w(DIAG, "triggerSync: no authenticated user — skipping")
             _syncState.value = SyncState.Idle
             return Result.success(Unit)
         }
         if (!_isOnline.value) {
+            Log.w(DIAG, "triggerSync: offline — skipping")
             _syncState.value = SyncState.Offline
             return Result.success(Unit)
         }
         if (firestore == null) {
+            Log.e(DIAG, "triggerSync: Firestore.getInstance() returned null — Firebase may not be initialized")
             _syncState.value = SyncState.Failed("Firestore not initialized")
             return Result.failure(IllegalStateException("Firestore unavailable"))
         }
 
         _syncState.value = SyncState.Syncing
-        return runCatching {
-            uploadPendingChanges()
-            downloadRemoteUpdates()
-            syncUserPreferences()
+        return try {
+            // Propagate sub-operation failures instead of reporting a false success.
+            val upload   = uploadPendingChanges()
+            val download = downloadRemoteUpdates()
+            val prefsRes = syncUserPreferences()
+
+            val firstFailure = listOf(upload, download, prefsRes).firstOrNull { it.isFailure }
+            if (firstFailure != null) {
+                val ex = firstFailure.exceptionOrNull()!!
+                Log.e(DIAG, "triggerSync: PARTIAL/FAILED — ${ex.javaClass.name}: ${ex.message}", ex)
+                _syncState.value = SyncState.Failed(ex.message ?: "Sync error")
+                return Result.failure(ex)
+            }
+
             _syncState.value = SyncState.Success(System.currentTimeMillis())
-            Log.d(TAG, "Full sync successful for ${user.uid}")
-            Unit
-        }.onFailure { ex ->
-            Log.e(TAG, "Full sync failed: ${ex.message}", ex)
+            Log.d(DIAG, "triggerSync: full sync SUCCESS for uid=${resolveOwnerUid()}")
+            Result.success(Unit)
+        } catch (ex: Exception) {
+            Log.e(DIAG, "triggerSync: FAILED — ${ex.javaClass.name}: ${ex.message}", ex)
             _syncState.value = SyncState.Failed(ex.message ?: "Sync error")
+            Result.failure(ex)
         }
     }
 
     // ── Upload ────────────────────────────────────────────────────────────────
 
-    override suspend fun uploadPendingChanges(): Result<Unit> = runCatching {
-        val user = sessionManager.currentUser.value ?: run {
-            Log.d(TAG, "uploadPendingChanges: no user"); return@runCatching Unit
+    override suspend fun uploadPendingChanges(): Result<Unit> {
+        // ── Step A: Resolve owner UID (FirebaseAuth first — survives process death) ──
+        val fbUser = FirebaseAuth.getInstance().currentUser
+        val sessionUser = sessionManager.currentUser.value
+        Log.d(DIAG, "uploadPendingChanges() called")
+        Log.d(DIAG, "  FirebaseAuth.currentUser uid  = ${fbUser?.uid ?: "NULL"}")
+        Log.d(DIAG, "  FirebaseAuth.currentUser email= ${fbUser?.email ?: "NULL"}")
+        Log.d(DIAG, "  FirebaseAuth.isAnonymous      = ${fbUser?.isAnonymous}")
+        Log.d(DIAG, "  SessionManager.currentUser uid= ${sessionUser?.uid ?: "NULL"}")
+
+        val ownerUid = resolveOwnerUid()
+        if (ownerUid == null) {
+            // Genuinely signed out. Return FAILURE (not success) so the caller and
+            // WorkManager see a real error instead of a false positive.
+            Log.e(DIAG, "uploadPendingChanges: ABORT — no authenticated user (FirebaseAuth AND session are null)")
+            return Result.failure(IllegalStateException("Not signed in — cannot upload"))
         }
-        val db = firestore ?: run {
-            Log.w(TAG, "uploadPendingChanges: Firestore null"); return@runCatching Unit
+        Log.d(DIAG, "  Resolved ownerUid = $ownerUid")
+
+        // ── Step B: Verify Firestore ──────────────────────────────────────────
+        val db = firestore
+        if (db == null) {
+            Log.e(DIAG, "uploadPendingChanges: ABORT — Firestore.getInstance() returned null")
+            return Result.failure(IllegalStateException("Firestore unavailable"))
+        }
+        Log.d(DIAG, "  Firestore app=${db.app.name} projectId=${db.app.options.projectId}")
+
+        // ── Step C: Adopt any rows orphaned with userId='local' ───────────────
+        backfillLocalRows(ownerUid)
+
+        // ── Step D: Query pending transcriptions ──────────────────────────────
+        val pending = transcriptionDao.getPendingSyncTranscriptions()
+        Log.d(DIAG, "  Pending transcriptions in Room: ${pending.size}")
+        if (pending.isEmpty()) {
+            val all = transcriptionDao.all()
+            Log.w(DIAG, "  No pending transcriptions. Total rows in Room: ${all.size}")
+            all.forEach { t ->
+                Log.d(DIAG, "    Row: id=${t.id} userId=${t.userId} " +
+                        "syncStatus=${t.syncStatus} textLen=${t.text.length} ts=${t.timestamp}")
+            }
         }
 
-        // Transcriptions
-        val pendingTranscriptions = transcriptionDao.getPendingSyncTranscriptions()
-        Log.d(TAG, "Uploading ${pendingTranscriptions.size} pending transcriptions")
-        for (item in pendingTranscriptions) {
+        // ── Step E: Upload each pending record ────────────────────────────────
+        var uploaded = 0
+        var failed = 0
+        // Records the first exception encountered so the caller learns the upload
+        // did not fully succeed. Previously this method always returned success,
+        // which is why "upload SUCCESS" appeared in logs while nothing was written.
+        var lastError: Exception? = null
+        for (item in pending) {
+            val path = "$COLLECTION_TRANSCRIPTS/${item.id}"
+            Log.d(DIAG, "  Uploading → path=$path ownerUid=$ownerUid " +
+                    "userId=${item.userId} syncStatus=${item.syncStatus} textLen=${item.text.length}")
+
             val doc = hashMapOf(
-                "ownerUid"    to user.uid,
+                "ownerUid"    to ownerUid,
                 "id"          to item.id,
                 "text"        to item.text,
                 "timestamp"   to item.timestamp,
                 "model"       to item.model,
                 "audioPath"   to item.audioPath,
-                "userId"      to user.uid,
+                "userId"      to ownerUid,
                 "syncVersion" to item.syncVersion,
                 "updatedAt"   to item.updatedAt,
                 "deleted"     to item.deleted,
             )
-            db.collection(COLLECTION_TRANSCRIPTS).document(item.id)
-                .set(doc, SetOptions.merge()).await()
-            transcriptionDao.insert(item.copy(syncStatus = "SYNCED", lastSyncedAt = System.currentTimeMillis()))
-            Log.d(TAG, "Uploaded transcript ${item.id}")
-        }
 
-        // Versions
+            try {
+                Log.d(DIAG, "    set() → collection('$COLLECTION_TRANSCRIPTS').document('${item.id}')")
+                db.collection(COLLECTION_TRANSCRIPTS).document(item.id)
+                    .set(doc, SetOptions.merge()).await()
+                transcriptionDao.insert(item.copy(
+                    userId = ownerUid,
+                    syncStatus = "SYNCED",
+                    lastSyncedAt = System.currentTimeMillis(),
+                ))
+                uploaded++
+                Log.d(DIAG, "    SUCCESS — $path written; Room marked SYNCED")
+            } catch (ex: Exception) {
+                failed++
+                lastError = ex
+                // Full stacktrace — nothing swallowed.
+                Log.e(DIAG, "    FAILED $path — ${ex.javaClass.name}: ${ex.message}", ex)
+                if (ex is com.google.firebase.firestore.FirebaseFirestoreException) {
+                    Log.e(DIAG, "    FirestoreException code=${ex.code}")
+                }
+                transcriptionDao.insert(item.copy(syncStatus = "PENDING"))
+            }
+        }
+        Log.d(DIAG, "  Transcripts: uploaded=$uploaded failed=$failed")
+
+        // ── Step E: Upload pending versions ──────────────────────────────────
         val pendingVersions = versionDao.getPendingSyncVersions()
-        Log.d(TAG, "Uploading ${pendingVersions.size} pending versions")
+        Log.d(DIAG, "  Pending versions in Room: ${pendingVersions.size}")
         for (ver in pendingVersions) {
+            val path = "$COLLECTION_VERSIONS/${ver.id}"
+            Log.d(DIAG, "  Uploading version → path=$path transcriptId=${ver.transcriptId} type=${ver.versionType}")
             val doc = hashMapOf(
-                "ownerUid"     to user.uid,
+                "ownerUid"     to ownerUid,
                 "id"           to ver.id,
                 "transcriptId" to ver.transcriptId,
                 "versionType"  to ver.versionType,
@@ -165,156 +289,202 @@ class SyncManagerImpl @Inject constructor(
                 "updatedAt"    to ver.updatedAt,
                 "deleted"      to ver.deleted,
             )
-            db.collection(COLLECTION_VERSIONS).document(ver.id)
-                .set(doc, SetOptions.merge()).await()
-            versionDao.insertVersion(ver.copy(syncStatus = "SYNCED", lastSyncedAt = System.currentTimeMillis()))
-            Log.d(TAG, "Uploaded version ${ver.id} (${ver.versionType})")
+            try {
+                db.collection(COLLECTION_VERSIONS).document(ver.id)
+                    .set(doc, SetOptions.merge()).await()
+                versionDao.insertVersion(ver.copy(syncStatus = "SYNCED", lastSyncedAt = System.currentTimeMillis()))
+                Log.d(DIAG, "    SUCCESS — version ${ver.id} written to Firestore")
+            } catch (ex: Exception) {
+                lastError = ex
+                Log.e(DIAG, "    FAILED to upload version ${ver.id} — ${ex.javaClass.name}: ${ex.message}", ex)
+            }
         }
 
-        // AI jobs
+        // ── Step F: Upload pending AI jobs ────────────────────────────────────
         val pendingJobs = aiJobDao.getPendingSyncJobs()
+        Log.d(DIAG, "  Pending AI jobs in Room: ${pendingJobs.size}")
         for (job in pendingJobs) {
             val doc = hashMapOf(
-                "ownerUid"        to user.uid,
-                "id"              to job.id,
-                "transcriptId"    to job.transcriptId,
-                "versionType"     to job.versionType,
+                "ownerUid"         to ownerUid,
+                "id"               to job.id,
+                "transcriptId"     to job.transcriptId,
+                "versionType"      to job.versionType,
                 "promptTemplateId" to job.promptTemplateId,
-                "provider"        to job.provider,
-                "model"           to job.model,
-                "status"          to job.status,
-                "retryCount"      to job.retryCount,
-                "createdAt"       to job.createdAt,
-                "startedAt"       to job.startedAt,
-                "completedAt"     to job.completedAt,
+                "provider"         to job.provider,
+                "model"            to job.model,
+                "status"           to job.status,
+                "retryCount"       to job.retryCount,
+                "createdAt"        to job.createdAt,
+                "startedAt"        to job.startedAt,
+                "completedAt"      to job.completedAt,
                 "processingTimeMs" to job.processingTimeMs,
-                "errorMessage"    to job.errorMessage,
-                "syncVersion"     to job.syncVersion,
-                "updatedAt"       to job.updatedAt,
-                "deleted"         to job.deleted,
+                "errorMessage"     to job.errorMessage,
+                "syncVersion"      to job.syncVersion,
+                "updatedAt"        to job.updatedAt,
+                "deleted"          to job.deleted,
             )
-            db.collection(COLLECTION_AI_JOBS).document(job.id)
-                .set(doc, SetOptions.merge()).await()
-            aiJobDao.insertOrUpdateJob(job.copy(syncStatus = "SYNCED", lastSyncedAt = System.currentTimeMillis()))
+            try {
+                db.collection(COLLECTION_AI_JOBS).document(job.id)
+                    .set(doc, SetOptions.merge()).await()
+                aiJobDao.insertOrUpdateJob(job.copy(syncStatus = "SYNCED", lastSyncedAt = System.currentTimeMillis()))
+                Log.d(DIAG, "  SUCCESS — job ${job.id} written to Firestore")
+            } catch (ex: Exception) {
+                lastError = ex
+                Log.e(DIAG, "  FAILED to upload job ${job.id} — ${ex.javaClass.name}: ${ex.message}", ex)
+            }
         }
+
+        Log.d(DIAG, "uploadPendingChanges: complete")
+        if (lastError != null) {
+            Log.e(DIAG, "uploadPendingChanges: finished WITH FAILURES — reporting failure to caller")
+            return Result.failure(lastError!!)
+        }
+        return Result.success(Unit)
     }
 
-    // ── Download (incremental 48h window) ────────────────────────────────────
+    // ── Download ──────────────────────────────────────────────────────────────
 
+    /**
+     * Incrementally pulls changes from Firestore that arrived since the last sync.
+     * Uses a 48-hour window for the incremental pull; for full restore after reinstall
+     * use [restoreRecentHistory] which has no time filter.
+     */
     override suspend fun downloadRemoteUpdates(): Result<Unit> = runCatching {
-        val user = sessionManager.currentUser.value ?: return@runCatching Unit
+        val uid  = resolveOwnerUid() ?: return@runCatching Unit
         val db   = firestore ?: return@runCatching Unit
         val since = System.currentTimeMillis() - RECENT_HISTORY_WINDOW_MS
 
-        // Single-field query: ownerUid only — avoids composite index requirement.
-        // Client-side filter for the 48h window.
+        // Single equality filter on ownerUid only. Adding whereGreaterThanOrEqualTo("updatedAt")
+        // would require a composite index (equality + range on different fields), so the
+        // time window is applied client-side instead.
         val txSnap = db.collection(COLLECTION_TRANSCRIPTS)
-            .whereEqualTo("ownerUid", user.uid)
+            .whereEqualTo("ownerUid", uid)
             .get().await()
 
         var merged = 0
         for (doc in txSnap.documents) {
-            val updatedAt = doc.getLong("updatedAt") ?: 0L
-            if (updatedAt >= since) {
-                mergeRemoteTranscription(doc, user.uid)
+            if ((doc.getLong("updatedAt") ?: 0L) >= since) {
+                mergeRemoteTranscription(doc, uid)
                 merged++
             }
         }
-
         val verSnap = db.collection(COLLECTION_VERSIONS)
-            .whereEqualTo("ownerUid", user.uid)
+            .whereEqualTo("ownerUid", uid)
             .get().await()
         for (doc in verSnap.documents) {
-            val updatedAt = doc.getLong("updatedAt") ?: 0L
-            if (updatedAt >= since) mergeRemoteVersion(doc)
+            if ((doc.getLong("updatedAt") ?: 0L) >= since) {
+                mergeRemoteVersion(doc)
+            }
         }
-
-        Log.d(TAG, "downloadRemoteUpdates: merged $merged transcripts for ${user.uid}")
+        Log.d(DIAG, "downloadRemoteUpdates: merged $merged transcripts for uid=$uid")
+        Unit
+    }.also { result ->
+        result.onFailure { ex ->
+            Log.e(DIAG, "downloadRemoteUpdates: FAILED — ${ex.javaClass.name}: ${ex.message}", ex)
+        }
     }
 
-    // ── History restoration (sign-in / reinstall) ─────────────────────────────
+    // ── History restoration ───────────────────────────────────────────────────
 
     /**
-     * Restores recent transcription history from Firestore immediately after sign-in.
-     *
-     * Uses a SINGLE-FIELD Firestore query (ownerUid only) to avoid composite index
-     * requirements. The timestamp filter is applied client-side.
-     *
-     * This is safe because:
-     * - Single-field queries on ownerUid are automatically indexed by Firestore.
-     * - The result set per user is bounded (we only keep recent history).
-     * - Client-side filtering is applied before Room insert.
+     * Full restore after reinstall / first sign-in.
+     * Downloads ALL transcripts for this user with NO time filter.
+     * This is intentionally unconditional: Firestore is the permanent source of truth.
      */
     override suspend fun restoreRecentHistory(): Result<Unit> {
-        val user = sessionManager.currentUser.value
-        if (user == null) {
-            Log.w(TAG, "restoreRecentHistory: no user in session — aborting")
-            return Result.success(Unit)
+        val fbUser = FirebaseAuth.getInstance().currentUser
+        val sessionUser = sessionManager.currentUser.value
+        Log.d(DIAG, "restoreRecentHistory() called")
+        Log.d(DIAG, "  FirebaseAuth.currentUser uid  = ${fbUser?.uid ?: "NULL"}")
+        Log.d(DIAG, "  FirebaseAuth.currentUser email= ${fbUser?.email ?: "NULL"}")
+        Log.d(DIAG, "  SessionManager.currentUser uid= ${sessionUser?.uid ?: "NULL"}")
+        Log.d(DIAG, "  isOnline = ${_isOnline.value}")
+
+        val ownerUid = resolveOwnerUid()
+        if (ownerUid == null) {
+            Log.e(DIAG, "restoreRecentHistory: ABORT — no authenticated user")
+            return Result.failure(IllegalStateException("Not signed in — cannot restore"))
         }
         if (!_isOnline.value) {
-            Log.d(TAG, "restoreRecentHistory: offline — will retry when connectivity returns")
-            return Result.success(Unit)
+            Log.w(DIAG, "restoreRecentHistory: deferred — offline. " +
+                    "Will retry when NetworkCallback.onAvailable() fires.")
+            return Result.failure(IllegalStateException("Offline — restore deferred"))
         }
         val db = firestore
         if (db == null) {
-            Log.e(TAG, "restoreRecentHistory: Firestore not initialized")
+            Log.e(DIAG, "restoreRecentHistory: ABORT — Firestore.getInstance() returned null")
             return Result.failure(IllegalStateException("Firestore unavailable"))
         }
 
-        Log.d(TAG, "restoreRecentHistory: starting for uid=${user.uid}")
         _syncState.value = SyncState.Syncing
 
-        return runCatching {
-            val since = System.currentTimeMillis() - (RECENT_RESTORE_DAYS * 24 * 60 * 60 * 1000L)
+        return try {
+            // ── NO time filter: restore every transcript belonging to this user ──
+            Log.d(DIAG, "  Query: collection='$COLLECTION_TRANSCRIPTS' " +
+                    "whereEqualTo('ownerUid', '$ownerUid')  [no timestamp filter]")
+            Log.d(DIAG, "  Firestore projectId=${db.app.options.projectId}")
 
-            // ── Step 1: Query transcriptions (single-field, always indexed) ──
-            Log.d(TAG, "restoreRecentHistory: querying Firestore collection=$COLLECTION_TRANSCRIPTS ownerUid=${user.uid}")
             val txSnap = db.collection(COLLECTION_TRANSCRIPTS)
-                .whereEqualTo("ownerUid", user.uid)
-                .get()
-                .await()
+                .whereEqualTo("ownerUid", ownerUid)
+                .get().await()
 
-            Log.d(TAG, "restoreRecentHistory: Firestore returned ${txSnap.size()} transcript docs")
+            Log.d(DIAG, "  Firestore returned ${txSnap.size()} documents from '$COLLECTION_TRANSCRIPTS'")
 
             var restored = 0
             val restoredIds = mutableListOf<String>()
 
             for (doc in txSnap.documents) {
                 val timestamp = doc.getLong("timestamp") ?: 0L
-                // Client-side recency filter
-                if (timestamp >= since) {
-                    mergeRemoteTranscription(doc, user.uid)
+                val isDeleted = doc.getBoolean("deleted") ?: false
+                Log.d(DIAG, "    Doc id=${doc.id} timestamp=$timestamp deleted=$isDeleted " +
+                        "ownerUid=${doc.getString("ownerUid")} textLen=${doc.getString("text")?.length ?: 0}")
+                if (!isDeleted) {
+                    mergeRemoteTranscription(doc, ownerUid)
                     restoredIds.add(doc.id)
                     restored++
-                    Log.d(TAG, "restoreRecentHistory: merged transcript ${doc.id} timestamp=$timestamp")
+                    Log.d(DIAG, "    → merged into Room")
                 } else {
-                    Log.d(TAG, "restoreRecentHistory: skipping old transcript ${doc.id} timestamp=$timestamp (since=$since)")
+                    Log.d(DIAG, "    → skipped (deleted)")
                 }
             }
 
-            Log.d(TAG, "restoreRecentHistory: $restored transcripts merged into Room")
+            Log.d(DIAG, "  $restored transcripts merged into Room")
 
-            // ── Step 2: Restore versions for restored transcripts ─────────────
+            // Restore associated versions.
+            //
+            // NOTE: this queries by ownerUid ONLY (a single equality filter), then filters
+            // transcriptIds client-side. Two reasons:
+            //  1. Security rules for transcriptVersions authorise on ownerUid. A query that
+            //     filtered only on transcriptId is NOT satisfiable against such a rule and
+            //     Firestore rejects the whole list query with PERMISSION_DENIED.
+            //  2. Combining whereIn(transcriptId) with whereEqualTo(ownerUid) would require
+            //     a composite index. Filtering client-side avoids that entirely.
             if (restoredIds.isNotEmpty()) {
-                Log.d(TAG, "restoreRecentHistory: fetching versions for ${restoredIds.size} transcripts")
-                restoredIds.chunked(30).forEach { chunk ->
-                    val verSnap = db.collection(COLLECTION_VERSIONS)
-                        .whereIn("transcriptId", chunk)
-                        .get()
-                        .await()
-                    Log.d(TAG, "restoreRecentHistory: version query returned ${verSnap.size()} docs")
-                    for (doc in verSnap.documents) {
+                val wanted = restoredIds.toSet()
+                val verSnap = db.collection(COLLECTION_VERSIONS)
+                    .whereEqualTo("ownerUid", ownerUid)
+                    .get().await()
+                Log.d(DIAG, "  Version query returned ${verSnap.size()} docs for ownerUid=$ownerUid")
+                var mergedVersions = 0
+                for (doc in verSnap.documents) {
+                    if (doc.getString("transcriptId") in wanted) {
                         mergeRemoteVersion(doc)
+                        mergedVersions++
                     }
                 }
+                Log.d(DIAG, "  $mergedVersions versions merged into Room")
             }
 
             _syncState.value = SyncState.Success(System.currentTimeMillis())
-            Log.d(TAG, "restoreRecentHistory: complete — $restored transcripts restored for ${user.uid}")
-            Unit
-        }.onFailure { ex ->
-            Log.e(TAG, "restoreRecentHistory: FAILED — ${ex.javaClass.simpleName}: ${ex.message}", ex)
+            Log.d(DIAG, "restoreRecentHistory: COMPLETE — $restored transcripts restored for uid=$ownerUid")
+            Result.success(Unit)
+        } catch (ex: Exception) {
+            Log.e(DIAG, "restoreRecentHistory: FAILED — ${ex.javaClass.name}: ${ex.message}", ex)
+            if (ex is com.google.firebase.firestore.FirebaseFirestoreException) {
+                Log.e(DIAG, "  FirestoreException code=${ex.code}")
+            }
             _syncState.value = SyncState.Failed(ex.message ?: "Restore failed")
+            Result.failure(ex)
         }
     }
 
@@ -387,22 +557,20 @@ class SyncManagerImpl @Inject constructor(
     // ── Preferences sync ──────────────────────────────────────────────────────
 
     override suspend fun syncUserPreferences(): Result<Unit> = runCatching {
-        val user = sessionManager.currentUser.value ?: return@runCatching Unit
-        val db   = firestore ?: return@runCatching Unit
-
-        val ref = db.collection(COLLECTION_PREFERENCES).document(user.uid)
+        val uid = resolveOwnerUid() ?: return@runCatching Unit
+        val db  = firestore ?: return@runCatching Unit
+        val ref = db.collection(COLLECTION_PREFERENCES).document(uid)
         val localPrefs = hashMapOf(
-            "ownerUid"                    to user.uid,
-            "grammarCorrectionEnabled"    to prefs.grammarCorrectionEnabled,
+            "ownerUid"                      to uid,
+            "grammarCorrectionEnabled"      to prefs.grammarCorrectionEnabled,
             "autoEnhanceAfterTranscription" to prefs.autoEnhanceAfterTranscription,
-            "defaultRewriteStyle"         to prefs.defaultRewriteStyle,
-            "defaultAiProvider"           to prefs.defaultAiProvider,
-            "language"                    to prefs.language,
-            "theme"                       to prefs.theme,
-            "updatedAt"                   to System.currentTimeMillis(),
+            "defaultRewriteStyle"           to prefs.defaultRewriteStyle,
+            "defaultAiProvider"             to prefs.defaultAiProvider,
+            "language"                      to prefs.language,
+            "theme"                         to prefs.theme,
+            "updatedAt"                     to System.currentTimeMillis(),
         )
         ref.set(localPrefs, SetOptions.merge()).await()
-
         val remoteDoc = ref.get().await()
         if (remoteDoc.exists()) {
             remoteDoc.getBoolean("grammarCorrectionEnabled")?.let      { prefs.grammarCorrectionEnabled = it }
@@ -412,16 +580,22 @@ class SyncManagerImpl @Inject constructor(
             remoteDoc.getString("language")?.let                       { prefs.language = it }
             remoteDoc.getString("theme")?.let                          { prefs.theme = it }
         }
-        Log.d(TAG, "syncUserPreferences: done for ${user.uid}")
+    }.also { result ->
+        result.onFailure { ex ->
+            Log.e(DIAG, "syncUserPreferences: FAILED — ${ex.javaClass.name}: ${ex.message}", ex)
+        }
     }
 
     companion object {
-        private const val TAG = "SyncManagerImpl"
+        private const val DIAG = "CloudSync"      // filter by this tag in Logcat
+        private const val TAG  = "SyncManagerImpl"
         private const val COLLECTION_TRANSCRIPTS  = "transcripts"
         private const val COLLECTION_VERSIONS     = "transcriptVersions"
         private const val COLLECTION_AI_JOBS      = "aiJobs"
         private const val COLLECTION_PREFERENCES  = "userPreferences"
+        /** Placeholder userId written when no session was resolved. */
+        private const val LOCAL_USER_ID           = "local"
+        /** Window for incremental sync only — not used for full restore. */
         private const val RECENT_HISTORY_WINDOW_MS = 48L * 60 * 60 * 1000
-        private const val RECENT_RESTORE_DAYS      = 2L
     }
 }

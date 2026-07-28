@@ -12,8 +12,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -66,7 +64,7 @@ class GroqAIProvider @Inject constructor(
 
             if (!response.isSuccessful) {
                 Log.w(TAG, "Groq API error ${response.code}: $responseBody")
-                throw parseHttpError(response.code, responseBody)
+                throw parseHttpError(response.code, responseBody, name)
             }
 
             val jsonRoot = JSONObject(responseBody)
@@ -80,20 +78,8 @@ class GroqAIProvider @Inject constructor(
                 .getString("content")
                 .trim()
 
-            Log.d(TAG, "Groq completion success — output ${content.length} chars")
+            Log.d(TAG, "Groq completion success (model=$targetModel) — ${content.length} chars")
             content
-        }
-    }
-
-    private fun parseHttpError(code: Int, body: String): Exception {
-        val message = runCatching {
-            JSONObject(body).getJSONObject("error").getString("message")
-        }.getOrNull()
-
-        return when (code) {
-            401 -> IllegalStateException(message ?: "Invalid Groq API key (HTTP 401)")
-            429 -> RuntimeException(message ?: "Groq rate limit or quota exceeded (HTTP 429)")
-            else -> RuntimeException(message ?: "Groq API request failed with HTTP $code")
         }
     }
 

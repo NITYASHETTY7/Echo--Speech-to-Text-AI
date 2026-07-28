@@ -28,46 +28,44 @@ class AuthRepositoryImpl @Inject constructor(
     override val isAuthenticated: StateFlow<Boolean> = sessionManager.isAuthenticated
 
     init {
-        /**
-         * Cold-start: Firebase Auth may still hold a valid token from before the
-         * reinstall (tokens are stored in the device KeyStore, which survives
-         * uninstall on API 23+).
-         *
-         * If a user is already authenticated, restore their recent history
-         * immediately so the History screen is populated without requiring
-         * a new sign-in gesture.
-         */
         val initialUser = authRemoteDataSource.getCurrentUser()
+        Log.d("CloudSync", "AuthRepositoryImpl.init: FirebaseAuth persisted user = ${initialUser?.uid ?: "NULL"}")
         if (initialUser != null) {
             Log.d(TAG, "Cold-start: session restored for ${initialUser.uid}")
             sessionManager.setCurrentUser(initialUser)
             authScope.launch {
-                Log.d(TAG, "Cold-start: triggering history restoration for ${initialUser.uid}")
+                Log.d("CloudSync", "AuthRepositoryImpl.init: cold-start restore starting for uid=${initialUser.uid}")
                 syncManager.restoreRecentHistory()
+                    .onSuccess { Log.d("CloudSync", "AuthRepositoryImpl.init: cold-start restore SUCCESS") }
                     .onFailure { ex ->
-                        Log.w(TAG, "Cold-start restore failed (non-fatal): ${ex.message}")
+                        Log.e("CloudSync", "AuthRepositoryImpl.init: cold-start restore FAILED — " +
+                                "${ex.javaClass.name}: ${ex.message}", ex)
                     }
             }
+        } else {
+            Log.d("CloudSync", "AuthRepositoryImpl.init: no persisted session — user must sign in")
         }
     }
 
     override suspend fun signInWithGoogleIdToken(idToken: String): Result<User> {
+        Log.d("CloudSync", "AuthRepositoryImpl.signInWithGoogleIdToken: called")
         val result = authRemoteDataSource.signInWithGoogleIdToken(idToken)
         result.onSuccess { user ->
-            // 1. Update Firestore user profile
+            Log.d("CloudSync", "AuthRepositoryImpl.signInWithGoogleIdToken: SUCCESS uid=${user.uid} email=${user.email}")
             userRemoteDataSource.createOrUpdateUser(user)
-            // 2. Mark session as authenticated
             sessionManager.setCurrentUser(user)
-            // 3. Restore recent history in the background (non-blocking)
-            //    setCurrentUser() is synchronous — user.uid is available to
-            //    restoreRecentHistory() when the coroutine body executes.
             authScope.launch {
-                Log.d(TAG, "Sign-in: triggering history restoration for ${user.uid}")
+                Log.d("CloudSync", "AuthRepositoryImpl: launching restoreRecentHistory for uid=${user.uid}")
                 syncManager.restoreRecentHistory()
+                    .onSuccess { Log.d("CloudSync", "AuthRepositoryImpl: restoreRecentHistory SUCCESS") }
                     .onFailure { ex ->
-                        Log.w(TAG, "Sign-in restore failed (non-fatal): ${ex.message}")
+                        Log.e("CloudSync", "AuthRepositoryImpl: restoreRecentHistory FAILED — " +
+                                "${ex.javaClass.name}: ${ex.message}", ex)
                     }
             }
+        }
+        result.onFailure { ex ->
+            Log.e("CloudSync", "AuthRepositoryImpl.signInWithGoogleIdToken: FAILED — ${ex.javaClass.name}: ${ex.message}", ex)
         }
         return result
     }

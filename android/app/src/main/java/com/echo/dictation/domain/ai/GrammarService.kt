@@ -8,12 +8,16 @@ import javax.inject.Singleton
 @Singleton
 class GrammarService @Inject constructor(
     private val aiRepository: AIRepository,
+    private val providerFactory: AIProviderFactory,
 ) {
 
     /**
      * Correct [rawTranscript] if enabled.
      * Always creates a NEW [TranscriptVersion] with [VersionType.GrammarCorrected]
      * without modifying the original.
+     *
+     * The provider and model recorded in the version reflect the ACTIVE provider at call-time,
+     * not a hardcoded fallback.
      */
     suspend fun correctGrammar(
         transcriptId: String,
@@ -25,22 +29,25 @@ class GrammarService @Inject constructor(
             return Result.success(null)
         }
 
-        Log.d(TAG, "Executing grammar correction for transcript $transcriptId")
+        val providerName = safeProviderName()
+        val modelName    = safeModelName()
+        Log.d(TAG, "Executing grammar correction for transcript $transcriptId via $providerName/$modelName")
+
         val result = aiRepository.executePrompt(
             systemPrompt = SYSTEM_PROMPT,
-            userPrompt = rawTranscript
+            userPrompt   = rawTranscript,
         )
 
         return result.mapCatching { correctedText ->
             val version = TranscriptVersion(
-                id = UUID.randomUUID().toString(),
+                id           = UUID.randomUUID().toString(),
                 transcriptId = transcriptId,
-                versionType = VersionType.GrammarCorrected,
-                createdAt = System.currentTimeMillis(),
-                provider = "Groq",
-                model = "llama-3.3-70b-versatile",
-                content = correctedText,
-                metadata = mapOf("source" to "grammar_service")
+                versionType  = VersionType.GrammarCorrected,
+                createdAt    = System.currentTimeMillis(),
+                provider     = providerName,
+                model        = modelName,
+                content      = correctedText,
+                metadata     = mapOf("source" to "grammar_service"),
             )
             aiRepository.saveVersion(version)
             version
@@ -48,6 +55,12 @@ class GrammarService @Inject constructor(
             Log.e(TAG, "Grammar correction failed for transcript $transcriptId: ${ex.message}", ex)
         }
     }
+
+    private fun safeProviderName(): String =
+        runCatching { providerFactory.currentProviderDisplayName() }.getOrDefault("Unknown")
+
+    private fun safeModelName(): String =
+        runCatching { providerFactory.getProvider().defaultModel }.getOrDefault("default")
 
     companion object {
         private const val TAG = "GrammarService"
