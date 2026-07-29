@@ -39,6 +39,7 @@ fun NavigationGraph(navController: NavHostController) {
                     prefs.onboardingCompleted = true
                     navController.navigate(Routes.MAIN) {
                         popUpTo(Routes.ONBOARDING) { inclusive = true }
+                        launchSingleTop = true
                     }
                 }
             }
@@ -52,13 +53,18 @@ fun NavigationGraph(navController: NavHostController) {
                     prefs.onboardingCompleted = true
                     navController.navigate(Routes.MAIN) {
                         popUpTo(Routes.ONBOARDING) { inclusive = true }
+                        launchSingleTop = true
                     }
                 },
             )
         }
         composable(Routes.MAIN) {
             MainScreen(
-                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
+                onNavigateToSettings = {
+                    navController.navigate(Routes.SETTINGS) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
         composable(Routes.SETTINGS) {

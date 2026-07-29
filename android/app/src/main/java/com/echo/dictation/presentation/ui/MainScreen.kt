@@ -84,6 +84,8 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -222,8 +224,12 @@ fun MainScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted -> micPermissionGranted = granted }
 
-    // Track accessibility service state
-    var accessibilityConnected by remember { mutableStateOf(TextInsertionAccessibilityService.instance != null) }
+    // Track accessibility service state.
+    // Use isAccessibilityServiceEnabled() for the initial value so we correctly
+    // reflect the current system setting on every cold launch and after device
+    // reboots — instance is always null at this point even when the service is
+    // registered in Android Settings.
+    var accessibilityConnected by remember { mutableStateOf(isAccessibilityServiceEnabled(context)) }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -406,7 +412,8 @@ private fun ScreenHeader(onNavigateToSettings: () -> Unit = {}) {
                         Brush.linearGradient(
                             listOf(PrimaryColor, PrimaryVariant)
                         )
-                    ),
+                    )
+                    .semantics { disabled() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
