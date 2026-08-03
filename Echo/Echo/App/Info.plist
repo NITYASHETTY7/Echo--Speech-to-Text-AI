@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- ── Bundle identity (mirrors build settings) ─────────────────── -->
+	<key>CFBundleDisplayName</key>
+	<string>Echo</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<!-- ── Google Sign-In OAuth callback scheme ─────────────────────── -->
+	<!-- REVERSED_CLIENT_ID from GoogleService-Info.plist               -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.940458102434-rteg840i8fl6askkat4unclb62ed8ga1</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- ── Permissions ──────────────────────────────────────────────── -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Echo needs access to the microphone to record audio for transcription.</string>
+
+	<!-- ── UI ───────────────────────────────────────────────────────── -->
+	<!--
+	  UILaunchScreen is REQUIRED for the app to receive the full native screen
+	  bounds. Without it, iOS runs the app in legacy launch-image compatibility
+	  mode: the window is rendered at a reduced logical size, letterboxed with
+	  black bars top and bottom, and clipped into a smaller rounded container on
+	  modern displays. An empty UILaunchScreen dictionary declares that the app
+	  supports every screen size natively (a blank launch screen), which removes
+	  the letterboxing and lets every screen fill the display top-to-bottom.
+
+	  Note: the target sets GENERATE_INFOPLIST_FILE = NO, so the
+	  INFOPLIST_KEY_UILaunchScreen_Generation build setting is ignored — the key
+	  MUST be declared here in the manual Info.plist.
+	-->
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict/>
+	</dict>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<!-- ── Category ─────────────────────────────────────────────────── -->
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+</dict>
+</plist>

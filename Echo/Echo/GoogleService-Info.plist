@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>940458102434-rteg840i8fl6askkat4unclb62ed8ga1.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.940458102434-rteg840i8fl6askkat4unclb62ed8ga1</string>
+	<key>ANDROID_CLIENT_ID</key>
+	<string>940458102434-7ghb0t5gr81rlovt0968bng90hu8gv4l.apps.googleusercontent.com</string>
+	<key>API_KEY</key>
+	<string>AIzaSyAJr05Jeyh8QkinZ9f3r97GNgtz59OWGiI</string>
+	<key>GCM_SENDER_ID</key>
+	<string>940458102434</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.mirailabs.echo.Echo</string>
+	<key>PROJECT_ID</key>
+	<string>echo-mirai</string>
+	<key>STORAGE_BUCKET</key>
+	<string>echo-mirai.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:940458102434:ios:d5e6aaf2a4deb2a945d1fb</string>
+</dict>
+</plist>
