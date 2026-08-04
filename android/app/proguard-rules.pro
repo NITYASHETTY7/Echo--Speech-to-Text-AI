@@ -103,3 +103,20 @@
 
 # ── Timber ────────────────────────────────────────────────────────────────────
 -dontwarn org.jetbrains.annotations.**
+
+# ── AppPreferences / ProviderSettings ────────────────────────────────────────
+# These are @Singleton @Inject classes. R8 must not merge, inline, or rename
+# their constructors — Hilt's generated code calls them via the DI graph.
+-keep class com.echo.dictation.data.local.AppPreferences { *; }
+-keep class com.echo.dictation.speech.provider.ProviderSettings { *; }
+-keep class com.echo.dictation.speech.provider.ProviderKeyStore { *; }
+
+# ── WorkManager / HiltWorker ──────────────────────────────────────────────────
+# WorkManager instantiates workers by class name at runtime.
+# @HiltWorker uses @AssistedInject, which Hilt generates a factory for —
+# the factory class name must survive R8.
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-keep @dagger.assisted.AssistedInject class * { *; }
+-keep @androidx.hilt.work.HiltWorker class * { *; }

@@ -27,12 +27,6 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    /**
-     * Injected as a singleton so the same [AppPreferences] instance that
-     * [SettingsViewModel] writes to is observed here.  When the user changes
-     * the theme in Settings, [AppPreferences.themeFlow] emits the new value
-     * and [EchoTheme] recomposes immediately — no app restart required.
-     */
     @Inject
     lateinit var prefs: AppPreferences
 
@@ -74,7 +68,10 @@ class MainActivity : ComponentActivity() {
 
             EchoTheme(darkTheme = darkTheme) {
                 Surface(Modifier.fillMaxSize()) {
-                    NavigationGraph(rememberNavController())
+                    // Pass the Hilt-injected singleton directly so NavigationGraph
+                    // never creates a second AppPreferences instance that bypasses
+                    // Hilt's DI graph and breaks under R8 constructor optimization.
+                    NavigationGraph(rememberNavController(), prefs)
                 }
             }
         }

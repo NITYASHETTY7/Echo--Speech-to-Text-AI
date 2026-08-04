@@ -34,6 +34,11 @@ data class AiUiState(
     val defaultProvider: String = "groq",
     val isRewriteSheetVisible: Boolean = false,
     val customPromptText: String = "",
+    /**
+     * The global output language for every AI rewrite operation.
+     * Persisted across app restarts. Default: "English".
+     */
+    val outputLanguage: String = "English",
 ) {
     val activeVersion: TranscriptVersion? get() = versions.getOrNull(activeIndex)
     val hasVersions: Boolean get() = versions.isNotEmpty()
@@ -58,6 +63,7 @@ class AIViewModel @Inject constructor(
     private val _isRewriteSheetVisible = MutableStateFlow(false)
     private val _customPromptText = MutableStateFlow("")
     private val _activeIndex = MutableStateFlow(0)
+    private val _outputLanguage = MutableStateFlow(prefs.outputLanguage)
 
     private val _versionsFlow = _currentTranscriptId.flatMapLatest { id ->
         if (id.isBlank()) flowOf(emptyList()) else aiService.getTranscriptVersions(id)
@@ -81,6 +87,7 @@ class AIViewModel @Inject constructor(
         _isRewriteSheetVisible,
         _customPromptText,
         _activeIndex,
+        _outputLanguage,
     ) { args ->
         val transcriptId = args[0] as String
         @Suppress("UNCHECKED_CAST")
@@ -96,6 +103,7 @@ class AIViewModel @Inject constructor(
         val isSheetVisible = args[10] as Boolean
         val customPrompt = args[11] as String
         val activeIndex = args[12] as Int
+        val outputLanguage = args[13] as String
 
         AiUiState(
             transcriptId = transcriptId,
@@ -110,7 +118,8 @@ class AIViewModel @Inject constructor(
             defaultStyle = defaultStyle,
             defaultProvider = defaultProvider,
             isRewriteSheetVisible = isSheetVisible,
-            customPromptText = customPrompt
+            customPromptText = customPrompt,
+            outputLanguage = outputLanguage,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -163,15 +172,21 @@ class AIViewModel @Inject constructor(
         }
     }
 
+    fun setOutputLanguage(language: String) {
+        prefs.outputLanguage = language
+        _outputLanguage.value = language
+    }
+
     fun getPromptTemplates(): List<PromptTemplate> = aiService.getPromptTemplates()
 
     fun applyPreset(transcriptId: String, sourceText: String, templateId: String) {
+        val language = _outputLanguage.value
         viewModelScope.launch {
             _isLoading.value = true
             _errorMessage.value = null
             hideRewriteSheet()
 
-            aiService.applyRewritePreset(transcriptId, sourceText, templateId)
+            aiService.applyRewritePreset(transcriptId, sourceText, templateId, language)
                 .onSuccess { version ->
                     _isLoading.value = false
                     _successMessage.value = "Created new version: ${version.versionType.displayName}"
@@ -206,13 +221,14 @@ class AIViewModel @Inject constructor(
             _errorMessage.value = "Custom prompt cannot be empty"
             return
         }
+        val language = _outputLanguage.value
 
         viewModelScope.launch {
             _isLoading.value = true
             _errorMessage.value = null
             hideRewriteSheet()
 
-            aiService.applyCustomRewrite(transcriptId, sourceText, instruction)
+            aiService.applyCustomRewrite(transcriptId, sourceText, instruction, language)
                 .onSuccess { version ->
                     _isLoading.value = false
                     _customPromptText.value = ""

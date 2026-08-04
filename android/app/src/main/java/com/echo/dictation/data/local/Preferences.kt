@@ -12,7 +12,7 @@ import javax.inject.Singleton
 class AppPreferences @Inject constructor(@ApplicationContext context: Context) {
     private val p = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-    var language: String get() = p.getString("language", "en") ?: "en"; set(v) { p.edit().putString("language", v).apply() }
+    var language: String get() = p.getString("language", "auto") ?: "auto"; set(v) { p.edit().putString("language", v).apply() }
     var model: String get() = p.getString("model", "whisper-large-v3-turbo") ?: "whisper-large-v3-turbo"; set(v) { p.edit().putString("model", v).apply() }
     var grammar: Boolean get() = p.getBoolean("grammar", true); set(v) { p.edit().putBoolean("grammar", v).apply() }
     var autoStart: Boolean get() = p.getBoolean("auto_start", false); set(v) { p.edit().putBoolean("auto_start", v).apply() }
@@ -83,5 +83,35 @@ class AppPreferences @Inject constructor(@ApplicationContext context: Context) {
     var onboardingCompleted: Boolean
         get() = p.getBoolean("onboarding_completed", false)
         set(v) { p.edit().putBoolean("onboarding_completed", v).apply() }
+
+    /**
+     * Floating mic pill enabled — Default: true.
+     *
+     * When false, [PillOverlayService] is stopped immediately and will not
+     * be restarted until the user re-enables it.
+     *
+     * Backed by a [MutableStateFlow] so [PillOverlayService] and the main
+     * screen react without an app restart.
+     */
+    private val _floatingPillEnabledFlow = MutableStateFlow(p.getBoolean("floating_pill_enabled", false))
+    val floatingPillEnabledFlow: StateFlow<Boolean> = _floatingPillEnabledFlow.asStateFlow()
+
+    var floatingPillEnabled: Boolean
+        get() = _floatingPillEnabledFlow.value
+        set(v) {
+            p.edit().putBoolean("floating_pill_enabled", v).apply()
+            _floatingPillEnabledFlow.value = v
+        }
+
+    /**
+     * Global output language for all AI rewrite operations (presets, custom prompts,
+     * translations). Default: "English".
+     *
+     * This is the single source of truth — every rewrite request reads this value.
+     * Persisted across app restarts. Never reset by provider switches.
+     */
+    var outputLanguage: String
+        get() = p.getString("ai_output_language", "English") ?: "English"
+        set(v) { p.edit().putString("ai_output_language", v).apply() }
 }
 

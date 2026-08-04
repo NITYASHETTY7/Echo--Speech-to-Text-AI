@@ -26,7 +26,12 @@ data class TranscriptionEntity(
     val remoteId: String? = null,
     val syncVersion: Int = 1,
     val updatedAt: Long = System.currentTimeMillis(),
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    /**
+     * Raw STT output, written once at transcription time and never overwritten.
+     * Null for rows migrated from schema version ≤ 6 (backward compatible).
+     */
+    val rawTranscript: String? = null,
 )
 
 @Dao
@@ -99,7 +104,7 @@ interface TranscriptVersionDao {
 
 @Database(
     entities = [TranscriptionEntity::class, TranscriptVersionEntity::class, AIJobEntity::class, ExportHistoryEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class EchoDatabase : RoomDatabase() {
@@ -107,4 +112,16 @@ abstract class EchoDatabase : RoomDatabase() {
     abstract fun versions(): TranscriptVersionDao
     abstract fun aiJobs(): AIJobDao
     abstract fun exportHistory(): ExportHistoryDao
+
+    companion object {
+        /**
+         * Migration 6 → 7: add nullable `rawTranscript` column to `transcriptions`.
+         * Existing rows get NULL (they fall back to `text` in the UI).
+         */
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transcriptions ADD COLUMN rawTranscript TEXT")
+            }
+        }
+    }
 }

@@ -50,9 +50,10 @@ class FocusAndKeyboardDetector @Inject constructor(
             lastFocusedNode?.recycle()
             lastFocusedNode = node
 
+            val injectionAvailable = TextInsertionAccessibilityService.instance != null
             val keyboardVisible = isKeyboardVisible()
-            val shouldShow = node.isEditable && !node.isPassword && keyboardVisible
-            Log.d(TAG, "Focus changed: editable=${node.isEditable} password=${node.isPassword} keyboard=$keyboardVisible → show=$shouldShow")
+            val shouldShow = injectionAvailable && node.isEditable && !node.isPassword && keyboardVisible
+            Log.d(TAG, "Focus changed: editable=${node.isEditable} password=${node.isPassword} keyboard=$keyboardVisible injection=$injectionAvailable → show=$shouldShow")
             updateVisibility(shouldShow)
         } catch (e: Exception) {
             Log.e(TAG, "Error checking focused field", e)
@@ -62,7 +63,10 @@ class FocusAndKeyboardDetector @Inject constructor(
 
     fun checkCurrentFocusState() {
         try {
+            // Gate on injection availability first — if the AccessibilityService is not
+            // connected there is no way to insert text, so the mic must not appear.
             val service = TextInsertionAccessibilityService.instance ?: run {
+                Log.d(TAG, "Injection service not connected — hiding mic")
                 updateVisibility(false)
                 return
             }
@@ -81,7 +85,7 @@ class FocusAndKeyboardDetector @Inject constructor(
 
             val keyboardVisible = isKeyboardVisible()
             val shouldShow = focusedNode.isEditable && !focusedNode.isPassword && keyboardVisible
-            Log.d(TAG, "Focus state: editable=${focusedNode.isEditable} keyboard=$keyboardVisible → show=$shouldShow")
+            Log.d(TAG, "Focus state: editable=${focusedNode.isEditable} keyboard=$keyboardVisible injection=true → show=$shouldShow")
             updateVisibility(shouldShow)
         } catch (e: Exception) {
             Log.e(TAG, "Error checking current focus state", e)

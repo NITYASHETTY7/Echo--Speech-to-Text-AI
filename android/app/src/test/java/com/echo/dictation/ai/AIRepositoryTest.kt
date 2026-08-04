@@ -5,6 +5,8 @@ import com.echo.dictation.data.local.db.TranscriptVersionDao
 import com.echo.dictation.data.local.db.TranscriptVersionEntity
 import com.echo.dictation.domain.ai.AIError
 import com.echo.dictation.domain.ai.AIProvider
+import com.echo.dictation.domain.ai.AIProviderFactory
+import com.echo.dictation.speech.provider.ProviderId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -15,7 +17,10 @@ import java.net.SocketTimeoutException
 
 class AIRepositoryTest {
 
-    class FakeAIProvider(private val exceptionToThrow: Exception? = null, private val successResponse: String = "Response") : AIProvider {
+    class FakeAIProvider(
+        private val exceptionToThrow: Exception? = null,
+        private val successResponse: String = "Response"
+    ) : AIProvider {
         override val id: String = "groq"
         override val name: String = "Groq"
         override val defaultModel: String = "llama-3.3-70b-versatile"
@@ -30,6 +35,13 @@ class AIRepositoryTest {
         }
     }
 
+    class FakeAIProviderFactory(private val provider: AIProvider) : AIProviderFactory {
+        override fun getProvider(): AIProvider = provider
+        override fun getProvider(providerId: ProviderId): AIProvider = provider
+        override fun isCurrentProviderConfiguredForAI(): Boolean = true
+        override fun currentProviderDisplayName(): String = provider.name
+    }
+
     class FakeTranscriptVersionDao : TranscriptVersionDao {
         val storedEntities = mutableListOf<TranscriptVersionEntity>()
 
@@ -38,6 +50,9 @@ class AIRepositoryTest {
 
         override suspend fun getLatestVersion(transcriptId: String): TranscriptVersionEntity? =
             storedEntities.filter { it.transcriptId == transcriptId }.lastOrNull()
+
+        override suspend fun getLatestVersionType(transcriptId: String): String? =
+            storedEntities.filter { it.transcriptId == transcriptId }.lastOrNull()?.versionType
 
         override suspend fun insertVersion(version: TranscriptVersionEntity) {
             storedEntities.add(version)
@@ -54,8 +69,9 @@ class AIRepositoryTest {
     @Test
     fun testExecutePromptSuccess() = runTest {
         val provider = FakeAIProvider(successResponse = "Response")
+        val factory = FakeAIProviderFactory(provider)
         val dao = FakeTranscriptVersionDao()
-        val repository = AIRepositoryImpl(provider, dao)
+        val repository = AIRepositoryImpl(factory, dao)
 
         val result = repository.executePrompt(null, "Hello")
         assertTrue(result.isSuccess)
@@ -65,8 +81,9 @@ class AIRepositoryTest {
     @Test
     fun testExecutePromptTimeoutErrorMapping() = runTest {
         val provider = FakeAIProvider(exceptionToThrow = SocketTimeoutException("Connection timed out"))
+        val factory = FakeAIProviderFactory(provider)
         val dao = FakeTranscriptVersionDao()
-        val repository = AIRepositoryImpl(provider, dao)
+        val repository = AIRepositoryImpl(factory, dao)
 
         val result = repository.executePrompt(null, "Test")
         assertTrue(result.isFailure)
@@ -76,8 +93,9 @@ class AIRepositoryTest {
     @Test
     fun testExecutePromptQuotaErrorMapping() = runTest {
         val provider = FakeAIProvider(exceptionToThrow = RuntimeException("HTTP 429 quota exceeded"))
+        val factory = FakeAIProviderFactory(provider)
         val dao = FakeTranscriptVersionDao()
-        val repository = AIRepositoryImpl(provider, dao)
+        val repository = AIRepositoryImpl(factory, dao)
 
         val result = repository.executePrompt(null, "Test")
         assertTrue(result.isFailure)

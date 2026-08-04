@@ -15,17 +15,25 @@ class RewriteService @Inject constructor(
     suspend fun rewriteWithPreset(
         transcriptId: String,
         sourceText: String,
-        templateId: String
+        templateId: String,
+        targetLanguage: String = "English",
     ): Result<TranscriptVersion> {
         val template = promptRepository.getTemplate(templateId)
             ?: return Result.failure(IllegalArgumentException("Template not found: $templateId"))
 
         val providerName = safeProviderName()
         val modelName    = safeModelName()
-        Log.d(TAG, "Executing rewrite preset '$templateId' for transcript $transcriptId via $providerName")
+        Log.d(TAG, "Executing rewrite preset '$templateId' for transcript $transcriptId via $providerName (lang=$targetLanguage)")
+
+        // Append output language instruction to the template's system prompt
+        val systemPromptWithLanguage = if (targetLanguage.isNotBlank() && targetLanguage != "English") {
+            "${template.systemPrompt}\n\nIMPORTANT: Write the entire output in $targetLanguage."
+        } else {
+            template.systemPrompt
+        }
 
         val result = aiRepository.executePrompt(
-            systemPrompt = template.systemPrompt,
+            systemPrompt = systemPromptWithLanguage,
             userPrompt   = sourceText,
         )
 
@@ -38,7 +46,11 @@ class RewriteService @Inject constructor(
                 provider     = providerName,
                 model        = modelName,
                 content      = rewrittenText,
-                metadata     = mapOf("template_id" to templateId, "template_title" to template.title),
+                metadata     = mapOf(
+                    "template_id" to templateId,
+                    "template_title" to template.title,
+                    "output_language" to targetLanguage,
+                ),
             )
             aiRepository.saveVersion(version)
             version
@@ -48,19 +60,27 @@ class RewriteService @Inject constructor(
     suspend fun rewriteWithCustomPrompt(
         transcriptId: String,
         sourceText: String,
-        customInstruction: String
+        customInstruction: String,
+        targetLanguage: String = "English",
     ): Result<TranscriptVersion> {
         require(customInstruction.isNotBlank()) { "Custom instruction must not be blank" }
+
+        // Append output language instruction when the user has selected a non-default language
+        val languageClause = if (targetLanguage.isNotBlank() && targetLanguage != "English") {
+            "\n\nIMPORTANT: Write the entire output in $targetLanguage."
+        } else {
+            ""
+        }
 
         val systemPrompt = """You are an expert writing assistant.
 Apply the following instruction to the provided transcript.
 Return only the transformed text without commentary.
 
-Instruction: $customInstruction""".trimIndent()
+Instruction: $customInstruction$languageClause""".trimIndent()
 
         val providerName = safeProviderName()
         val modelName    = safeModelName()
-        Log.d(TAG, "Executing custom rewrite for transcript $transcriptId via $providerName")
+        Log.d(TAG, "Executing custom rewrite for transcript $transcriptId via $providerName (lang=$targetLanguage)")
 
         val result = aiRepository.executePrompt(
             systemPrompt = systemPrompt,
@@ -76,7 +96,10 @@ Instruction: $customInstruction""".trimIndent()
                 provider     = providerName,
                 model        = modelName,
                 content      = rewrittenText,
-                metadata     = mapOf("custom_instruction" to customInstruction),
+                metadata     = mapOf(
+                    "custom_instruction" to customInstruction,
+                    "output_language" to targetLanguage,
+                ),
             )
             aiRepository.saveVersion(version)
             version

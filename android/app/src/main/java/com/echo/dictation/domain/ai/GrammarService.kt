@@ -74,6 +74,7 @@ Fix ONLY the following in the text:
 - Obvious spelling errors
 
 DO NOT:
+- Translate the text to another language. Keep the original language of the text.
 - Summarize
 - Add information not present in the original
 - Change the vocabulary or tone

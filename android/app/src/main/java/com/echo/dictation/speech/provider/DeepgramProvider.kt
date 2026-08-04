@@ -1,15 +1,19 @@
 package com.echo.dictation.speech.provider
 
 import android.util.Log
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Deepgram pre-recorded audio transcription.
@@ -21,6 +25,9 @@ import java.net.UnknownHostException
  * Content-Type: audio/mp4
  *
  * Response JSON path: results.channels[0].alternatives[0].transcript
+ *
+ * Uses OkHttp async [Call.enqueue] wrapped in [suspendCancellableCoroutine] so the
+ * coroutine is cancellable mid-flight and holds no dispatcher threads while waiting.
  */
 class DeepgramProvider(
     override val config: ProviderConfig,
@@ -43,27 +50,40 @@ class DeepgramProvider(
         Log.d(TAG, "url  : $url")
         Log.d(TAG, "file : ${audioFile.name}  size=${audioFile.length()}B")
 
-        val requestBody = audioFile.asRequestBody("audio/mp4".toMediaType())
         val request = Request.Builder()
             .url(url)
             .header("Authorization", config.authValueFormat.format(apiKey))
-            .post(requestBody)
+            .post(audioFile.asRequestBody("audio/mp4".toMediaType()))
             .build()
 
-        val responseText = try {
-            val response = httpClient.newCall(request).execute()
-            val body = response.body?.string() ?: ""
-            Log.d(TAG, "HTTP ${response.code}")
-            if (!response.isSuccessful) {
-                Log.e(TAG, "HTTP ${response.code} — body: $body")
-                throw IOException("Deepgram HTTP ${response.code}: $body")
+        val responseText = suspendCancellableCoroutine<String> { cont ->
+            val call = httpClient.newCall(request)
+            cont.invokeOnCancellation {
+                Log.d(TAG, "Coroutine cancelled — cancelling OkHttp call")
+                call.cancel()
             }
-            body
-        } catch (e: UnknownHostException) { Log.e(TAG, "UnknownHost: ${e.message}", e); throw e }
-        catch (e: SocketTimeoutException) { Log.e(TAG, "Timeout: ${e.message}", e); throw e }
-        catch (e: javax.net.ssl.SSLException) { Log.e(TAG, "SSL: ${e.message}", e); throw e }
-        catch (e: IOException) { Log.e(TAG, "IOException: ${e.message}", e); throw e }
-        catch (e: Exception) { Log.e(TAG, "Unexpected: ${e.message}", e); throw e }
+            call.enqueue(object : Callback {
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val body = response.body?.string() ?: ""
+                        Log.d(TAG, "HTTP ${response.code}")
+                        if (!response.isSuccessful) {
+                            Log.e(TAG, "HTTP ${response.code} — body: $body")
+                            cont.resumeWithException(IOException("Deepgram HTTP ${response.code}: $body"))
+                        } else {
+                            cont.resume(body)
+                        }
+                    } catch (e: Exception) {
+                        cont.resumeWithException(e)
+                    }
+                }
+                override fun onFailure(call: Call, e: IOException) {
+                    if (call.isCanceled()) return
+                    Log.e(TAG, "OkHttp failure: ${e.message}", e)
+                    cont.resumeWithException(e)
+                }
+            })
+        }
 
         val transcript = parseTranscript(responseText)
         Log.d(TAG, "transcript: \"${transcript.take(200)}\"")

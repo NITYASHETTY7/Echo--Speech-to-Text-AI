@@ -161,12 +161,24 @@ fun TranscriptionDetailBottomSheet(
                 transcription = transcription,
                 context = context,
                 onCopy = {
-                    val textToCopy = aiState.activeVersion?.content ?: transcription.text
+                    // For Original version, copy the immutable spoken-language text;
+                    // for AI versions, copy the processed content.
+                    val activeType = aiState.activeVersion?.versionType
+                    val textToCopy = if (activeType == null || activeType == com.echo.dictation.domain.ai.VersionType.Original) {
+                        transcription.rawTranscript ?: transcription.text
+                    } else {
+                        aiState.activeVersion?.content ?: transcription.text
+                    }
                     copyToClipboard(context, textToCopy)
                     onCopied?.invoke()
                 },
                 onShare = {
-                    val textToShare = aiState.activeVersion?.content ?: transcription.text
+                    val activeType = aiState.activeVersion?.versionType
+                    val textToShare = if (activeType == null || activeType == com.echo.dictation.domain.ai.VersionType.Original) {
+                        transcription.rawTranscript ?: transcription.text
+                    } else {
+                        aiState.activeVersion?.content ?: transcription.text
+                    }
                     shareText(context, textToShare)
                 },
                 onDelete = { showDeleteDialog = true }
@@ -200,9 +212,19 @@ fun TranscriptionDetailBottomSheet(
 
             Spacer(Modifier.height(8.dp))
 
-            // Active transcript card
-            val displayText = aiState.activeVersion?.content ?: transcription.text
-            TranscriptCard(text = displayText)
+            // Active transcript card.
+            // For the Original version, always display rawTranscript (the immutable
+            // STT output in the spoken language). Fall back to transcription.text for
+            // rows created before rawTranscript was introduced (backward compat).
+            // For every AI-generated version, use the version's processed content.
+            val activeVersionType = aiState.activeVersion?.versionType
+            val displayText = when {
+                activeVersionType == null || activeVersionType == com.echo.dictation.domain.ai.VersionType.Original ->
+                    transcription.rawTranscript ?: transcription.text
+                else ->
+                    aiState.activeVersion?.content ?: transcription.text
+            }
+            TranscriptCard(text = displayText, isAiVersion = activeVersionType != null && activeVersionType != com.echo.dictation.domain.ai.VersionType.Original)
 
             Spacer(Modifier.height(12.dp))
 
@@ -262,16 +284,23 @@ fun TranscriptionDetailBottomSheet(
     }
 
     if (aiState.isRewriteSheetVisible) {
-        // The source text for rewrites is always the active (latest processed) version,
-        // not the raw transcription.text. This satisfies Issue 15.
-        val rewriteSourceText = aiState.activeVersion?.content ?: transcription.text
+        // The source text for rewrites: use the currently active AI version content
+        // if one is selected, otherwise fall back to rawTranscript (spoken language)
+        // or transcription.text for backward compat.
+        val activeType = aiState.activeVersion?.versionType
+        val rewriteSourceText = if (activeType != null && activeType != com.echo.dictation.domain.ai.VersionType.Original) {
+            aiState.activeVersion?.content ?: transcription.text
+        } else {
+            transcription.rawTranscript ?: transcription.text
+        }
         RewriteBottomSheet(
             customPromptText = aiState.customPromptText,
             onCustomPromptChanged = { aiViewModel.onCustomPromptChanged(it) },
             onPresetSelected = { templateId -> aiViewModel.applyPreset(transcription.id, rewriteSourceText, templateId) },
-            onTranslateSelected = { language -> aiViewModel.applyTranslation(transcription.id, rewriteSourceText, language) },
             onCustomPromptSubmit = { aiViewModel.applyCustomPrompt(transcription.id, rewriteSourceText) },
             onDismiss = { aiViewModel.hideRewriteSheet() },
+            outputLanguage = aiState.outputLanguage,
+            onOutputLanguageChanged = { aiViewModel.setOutputLanguage(it) },
         )
     }
 
@@ -401,7 +430,7 @@ private fun SheetHeader(
 }
 
 @Composable
-private fun TranscriptCard(text: String) {
+private fun TranscriptCard(text: String, isAiVersion: Boolean = false) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -414,12 +443,29 @@ private fun TranscriptCard(text: String) {
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Text(
-                text = text.ifEmpty { "(Empty transcript)" },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.3f,
-            )
+            if (isAiVersion) {
+                // AI-generated versions may contain markdown — render it as rich text.
+                val annotatedText = remember(text) {
+                    com.echo.dictation.presentation.ui.util.parseMarkdownToAnnotatedString(
+                        text.ifEmpty { "(Empty transcript)" }
+                    )
+                }
+                Text(
+                    text = annotatedText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.3f,
+                )
+            } else {
+                // Original transcript: always display as plain text so raw spoken
+                // language (e.g. Hindi, Tamil) is never altered by markdown parsing.
+                Text(
+                    text = text.ifEmpty { "(Empty transcript)" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.3f,
+                )
+            }
         }
     }
 }

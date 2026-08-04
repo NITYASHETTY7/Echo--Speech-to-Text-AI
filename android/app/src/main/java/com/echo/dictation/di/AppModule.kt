@@ -29,6 +29,7 @@ object AppModule {
     @Singleton
     fun db(@ApplicationContext c: Context): EchoDatabase =
         Room.databaseBuilder(c, EchoDatabase::class.java, "whisperflow.db")
+            .addMigrations(EchoDatabase.MIGRATION_6_7)
             .fallbackToDestructiveMigration()
             .build()
 
@@ -60,9 +61,14 @@ object AppModule {
                     Log.d("OkHttp", safe)
                 }.apply { level = HttpLoggingInterceptor.Level.HEADERS }
             )
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(120, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            // readTimeout: max time to wait for the next byte once the response starts.
+            // 60 s is ample for any real STT response; 120 s was masking hangs.
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            // callTimeout: hard cap on the ENTIRE call (connect + write + read).
+            // Prevents a slow server from silently stalling for minutes.
+            .callTimeout(90, TimeUnit.SECONDS)
             .build()
     }
 
@@ -74,5 +80,6 @@ object AppModule {
         keyStore: ProviderKeyStore,
         settings: ProviderSettings,
         httpClient: OkHttpClient,
-    ): SpeechProviderFactory = SpeechProviderFactory(keyStore, settings, httpClient)
+        modelResolver: com.echo.dictation.speech.provider.GeminiModelResolver,
+    ): SpeechProviderFactory = SpeechProviderFactory(keyStore, settings, httpClient, modelResolver)
 }

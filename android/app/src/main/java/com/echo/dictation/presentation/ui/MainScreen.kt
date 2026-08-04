@@ -14,11 +14,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -47,7 +42,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -80,7 +74,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -102,7 +95,6 @@ import com.echo.dictation.presentation.theme.OnSurfaceVariant
 import com.echo.dictation.presentation.theme.Primary
 import com.echo.dictation.presentation.theme.PrimaryColor
 import com.echo.dictation.presentation.theme.PrimaryVariant
-import com.echo.dictation.service.overlay.PillOverlayService
 import com.echo.dictation.speech.provider.ProviderKeyStore
 import com.echo.dictation.speech.provider.ProviderSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -205,7 +197,6 @@ fun MainScreen(
     val context = LocalContext.current
     val history: List<Transcription> by viewModel.history.collectAsState()
     val latestVersionInfo by viewModel.latestVersionInfo.collectAsState()
-    val overlayRunning by PillOverlayService.isRunning.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -287,6 +278,7 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding()
         ) {
             // ── Header ────────────────────────────────────────────────────────
             ScreenHeader(onNavigateToSettings = onNavigateToSettings)
@@ -338,31 +330,6 @@ fun MainScreen(
                     )
                 }
             }
-
-            // ── Bottom action bar ─────────────────────────────────────────
-            BottomActionBar(
-                overlayRunning = overlayRunning,
-                onToggleOverlay = {
-                    if (overlayRunning) {
-                        PillOverlayService.stop(context.applicationContext)
-                        scope.launch {
-                            snackbarHostState.showSnackbar(
-                                message = "✓ Floating mic disabled",
-                                duration = SnackbarDuration.Short
-                            )
-                        }
-                    } else {
-                        PillOverlayService.start(context.applicationContext)
-                        scope.launch {
-                            snackbarHostState.showSnackbar(
-                                message = "✓ Floating mic enabled",
-                                duration = SnackbarDuration.Short
-                            )
-                        }
-                    }
-                },
-                modifier = Modifier.navigationBarsPadding()
-            )
         }
 
         // ── Snackbar ──────────────────────────────────────────────────────
@@ -851,8 +818,17 @@ private fun TranscriptionCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                val annotatedPreview = remember(previewText, showBadge) {
+                    if (showBadge) {
+                        // AI-generated version — parse markdown so bold/bullets render correctly
+                        com.echo.dictation.presentation.ui.util.parseMarkdownToAnnotatedString(previewText)
+                    } else {
+                        // Original transcript — show as plain text (preserves spoken language)
+                        androidx.compose.ui.text.AnnotatedString(previewText)
+                    }
+                }
                 Text(
-                    text = previewText,
+                    text = annotatedPreview,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 3,
@@ -904,134 +880,6 @@ private fun AiBadge(versionType: VersionType) {
                 fontWeight = FontWeight.SemiBold
             )
         }
-    }
-}
-
-// ─── Bottom action bar ────────────────────────────────────────────────────────
-
-@Composable
-private fun BottomActionBar(
-    overlayRunning: Boolean,
-    onToggleOverlay: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = CardColor,
-        tonalElevation = 6.dp,
-        shadowElevation = 8.dp
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Left: mic status
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                MicStatusIndicator(active = overlayRunning)
-                Column {
-                    Text(
-                        text = "Floating Mic",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = if (overlayRunning) "ON" else "OFF",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (overlayRunning) Primary else OnSurfaceVariant,
-                        modifier = Modifier.alpha(if (overlayRunning) 1f else 0.7f)
-                    )
-                }
-            }
-
-            // Right: toggle button
-            if (overlayRunning) {
-                Button(
-                    onClick = onToggleOverlay,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor   = MaterialTheme.colorScheme.onErrorContainer
-                    ),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    Icon(Icons.Filled.MicOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Disable", style = MaterialTheme.typography.labelLarge)
-                }
-            } else {
-                Button(
-                    onClick = onToggleOverlay,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Primary,
-                        contentColor   = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    Icon(Icons.Outlined.Mic, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Enable", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-    }
-}
-
-// ─── Mic status indicator ─────────────────────────────────────────────────────
-
-@Composable
-private fun MicStatusIndicator(active: Boolean) {
-    val infiniteTransition = rememberInfiniteTransition(label = "mic_pulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue  = 1.4f,
-        animationSpec = infiniteRepeatable(
-            animation  = tween(900, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse_scale"
-    )
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f,
-        targetValue  = 0.0f,
-        animationSpec = infiniteRepeatable(
-            animation  = tween(900, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse_alpha"
-    )
-
-    Box(
-        modifier = Modifier.size(36.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        // Pulse ring (only when active)
-        if (active) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .scale(pulseScale)
-                    .alpha(pulseAlpha)
-                    .clip(CircleShape)
-                    .background(Primary)
-            )
-        }
-        // Solid dot
-        Box(
-            modifier = Modifier
-                .size(14.dp)
-                .clip(CircleShape)
-                .background(if (active) Primary else OnSurfaceVariant.copy(alpha = 0.4f))
-        )
     }
 }
 

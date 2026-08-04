@@ -2,14 +2,17 @@ package com.echo.dictation.data.ai
 
 import android.util.Log
 import com.echo.dictation.domain.ai.AIProvider
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -17,6 +20,8 @@ import java.util.Locale
 import java.util.TimeZone
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * AWS Bedrock AI provider using the Bedrock Converse API with AWS SigV4 signing.
@@ -56,8 +61,7 @@ class BedrockAIProvider(
         systemPrompt: String?,
         userPrompt: String,
         modelOverride: String?
-    ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+    ): Result<String> = runCatching {
             val (accessKeyId, secretKey, sessionToken) = credentials
             check(accessKeyId.isNotBlank() && secretKey.isNotBlank()) {
                 "AWS Bedrock credentials are not configured. " +
@@ -65,35 +69,23 @@ class BedrockAIProvider(
             }
 
             val targetModel = modelOverride?.takeIf { it.isNotBlank() } ?: defaultModel
-
-            // Extract region from base URL or default to us-east-1
-            // URL format: https://bedrock-runtime.<region>.amazonaws.com
-            val region = "us-east-1" // Default; user should configure via endpoint
+            val region = "us-east-1"
 
             val bodyObj = JSONObject()
 
-            // System prompt
             if (!systemPrompt.isNullOrBlank()) {
                 bodyObj.put(
                     "system",
-                    JSONArray().put(
-                        JSONObject().put("text", systemPrompt).put("type", "text")
-                    )
+                    JSONArray().put(JSONObject().put("text", systemPrompt))
                 )
             }
 
-            // Messages
             bodyObj.put(
                 "messages",
                 JSONArray().put(
                     JSONObject()
                         .put("role", "user")
-                        .put(
-                            "content",
-                            JSONArray().put(
-                                JSONObject().put("type", "text").put("text", userPrompt)
-                            )
-                        )
+                        .put("content", JSONArray().put(JSONObject().put("text", userPrompt)))
                 )
             )
 
@@ -110,25 +102,15 @@ class BedrockAIProvider(
             }/converse"
 
             val request = buildSignedRequest(
-                url           = url,
-                bodyString    = bodyString,
-                region        = region,
-                accessKeyId   = accessKeyId,
-                secretKey     = secretKey,
-                sessionToken  = sessionToken,
+                url          = url,
+                bodyString   = bodyString,
+                region       = region,
+                accessKeyId  = accessKeyId,
+                secretKey    = secretKey,
+                sessionToken = sessionToken,
             )
 
-            val response = httpClient.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
-
-            if (!response.isSuccessful) {
-                Log.w(TAG, "Bedrock API error ${response.code}: $responseBody")
-                throw RuntimeException(
-                    runCatching {
-                        JSONObject(responseBody).getString("message")
-                    }.getOrNull() ?: "AWS Bedrock API request failed with HTTP ${response.code}"
-                )
-            }
+            val responseBody = executeAsync(request)
 
             val content = JSONObject(responseBody)
                 .getJSONObject("output")
@@ -141,7 +123,36 @@ class BedrockAIProvider(
             Log.d(TAG, "Bedrock completion success (model=$targetModel) — ${content.length} chars")
             content
         }
-    }
+
+    // ── Async HTTP ────────────────────────────────────────────────────────────
+
+    private suspend fun executeAsync(request: Request): String =
+        suspendCancellableCoroutine { cont ->
+            val call = httpClient.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val body = response.body?.string() ?: ""
+                        if (!response.isSuccessful) {
+                            Log.w(TAG, "Bedrock API error ${response.code}: $body")
+                            cont.resumeWithException(
+                                RuntimeException(
+                                    runCatching { JSONObject(body).getString("message") }.getOrNull()
+                                        ?: "AWS Bedrock HTTP ${response.code}"
+                                )
+                            )
+                        } else {
+                            cont.resume(body)
+                        }
+                    } catch (e: Exception) { cont.resumeWithException(e) }
+                }
+                override fun onFailure(call: Call, e: IOException) {
+                    if (call.isCanceled()) return
+                    cont.resumeWithException(e)
+                }
+            })
+        }
 
     // ── SigV4 signing ─────────────────────────────────────────────────────────
 

@@ -10,6 +10,7 @@ class SpeechProviderFactory @Inject constructor(
     private val keyStore: ProviderKeyStore,
     private val settings: ProviderSettings,
     private val httpClient: OkHttpClient,
+    private val modelResolver: GeminiModelResolver,
 ) {
     fun getProvider(): SpeechProvider {
         val providerId = settings.selectedProvider
@@ -41,7 +42,7 @@ class SpeechProviderFactory @Inject constructor(
         val provider: SpeechProvider = when (providerId) {
             ProviderId.DEEPGRAM   -> DeepgramProvider(config, apiKey, httpClient)
             ProviderId.ASSEMBLYAI -> AssemblyAIProvider(config, apiKey, httpClient)
-            ProviderId.GEMINI     -> GeminiProvider(config, apiKey, httpClient)
+            ProviderId.GEMINI     -> GeminiProvider(config, apiKey, httpClient, modelResolver)
             // BEDROCK uses OpenAI-compatible API; baseUrl is the region endpoint
             // supplied by the user. Falls through to OpenAICompatibleProvider.
             else                  -> OpenAICompatibleProvider(config, apiKey, baseUrl, httpClient)

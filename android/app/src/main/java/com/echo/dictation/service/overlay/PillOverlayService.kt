@@ -15,6 +15,7 @@ import com.echo.dictation.MainActivity
 import com.echo.dictation.R
 import com.echo.dictation.core.input.FocusAndKeyboardDetector
 import com.echo.dictation.core.permission.PermissionManager
+import com.echo.dictation.data.local.AppPreferences
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +26,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -34,8 +34,11 @@ class PillOverlayService : Service() {
     @Inject lateinit var windows: PillWindowManager
     @Inject lateinit var controller: PillController
     @Inject lateinit var focusDetector: FocusAndKeyboardDetector
+    @Inject lateinit var appPreferences: AppPreferences
 
     private var visibilityScope: CoroutineScope? = null
+    /** Observes floatingPillEnabled and stops the service if the user toggles it off. */
+    private var pillEnabledScope: CoroutineScope? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +51,13 @@ class PillOverlayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification())
         if (permissions.hasOverlay()) {
+            // Stop immediately if the user has disabled the floating pill.
+            if (!appPreferences.floatingPillEnabled) {
+                Log.d(TAG, "Floating pill disabled in settings — stopping service")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
             // The AccessibilityService forwards focus events to this shared detector.
             // The detector controls visibility only; recording remains in PillController.
             FocusAndKeyboardDetector.instance = focusDetector
@@ -56,13 +66,29 @@ class PillOverlayService : Service() {
             val overlayAdded = windows.show(this, ::onPillClicked)
             if (!overlayAdded) {
                 stopSelf()
-            } else if (visibilityScope == null) {
-                visibilityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
-                    scope.launch {
-                        delay(INITIAL_VISIBLE_DURATION_MS)
-                        windows.setVisibility(focusDetector.shouldShowFloatingMic.value)
-                        focusDetector.shouldShowFloatingMic.collect { shouldShow ->
-                            windows.setVisibility(shouldShow)
+            } else {
+                if (visibilityScope == null) {
+                    visibilityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
+                        scope.launch {
+                            // Apply the current state immediately (no startup delay — the pill
+                            // starts GONE and only appears once focus + injection are confirmed).
+                            windows.setVisibility(focusDetector.shouldShowFloatingMic.value)
+                            focusDetector.shouldShowFloatingMic.collect { shouldShow ->
+                                windows.setVisibility(shouldShow)
+                            }
+                        }
+                    }
+                }
+                // Observe the toggle: stop this service if the user disables the pill.
+                if (pillEnabledScope == null) {
+                    pillEnabledScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
+                        scope.launch {
+                            appPreferences.floatingPillEnabledFlow.collect { enabled ->
+                                if (!enabled) {
+                                    Log.d(TAG, "Floating pill disabled — stopping overlay service")
+                                    stopSelf()
+                                }
+                            }
                         }
                     }
                 }
@@ -77,6 +103,8 @@ class PillOverlayService : Service() {
     override fun onDestroy() {
         visibilityScope?.cancel()
         visibilityScope = null
+        pillEnabledScope?.cancel()
+        pillEnabledScope = null
         if (FocusAndKeyboardDetector.instance === focusDetector) {
             FocusAndKeyboardDetector.instance = null
         }
@@ -125,7 +153,6 @@ class PillOverlayService : Service() {
         private const val TAG = "PillOverlayService"
         private const val CHANNEL = "overlay"
         private const val NOTIFICATION_ID = 21
-        private const val INITIAL_VISIBLE_DURATION_MS = 2_000L
 
         private val runningState = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = runningState.asStateFlow()

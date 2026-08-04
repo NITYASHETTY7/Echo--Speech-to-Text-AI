@@ -12,6 +12,17 @@ data class Transcription(
     val isPinned: Boolean = false,
     /** One of: "PENDING", "SYNCED", "LOCAL_ONLY" */
     val syncStatus: String = "PENDING",
+    /**
+     * The raw Speech-to-Text output, stored immediately after transcription and
+     * never modified by grammar correction, AI enhancement, translation, or sync.
+     *
+     * This is the single source of truth for the Original tab — it always
+     * reflects what the user actually spoke, regardless of which language.
+     *
+     * Null for rows created before this field was introduced (backward compat).
+     * The UI falls back to [text] in that case.
+     */
+    val rawTranscript: String? = null,
 )
 
 data class AppSettings(

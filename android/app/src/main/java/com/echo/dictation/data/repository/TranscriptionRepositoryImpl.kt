@@ -96,12 +96,13 @@ class TranscriptionRepositoryImpl @Inject constructor(
 
             val id   = UUID.randomUUID().toString()
             val item = Transcription(
-                id        = id,
-                text      = rawText,
-                timestamp = System.currentTimeMillis(),
-                model     = selectedModel,
-                audioPath = file.absolutePath,
-                userId    = currentUserId,
+                id           = id,
+                text         = rawText,
+                timestamp    = System.currentTimeMillis(),
+                model        = selectedModel,
+                audioPath    = file.absolutePath,
+                userId       = currentUserId,
+                rawTranscript = rawText,   // write-once: STT output, never overwritten
             )
 
             // 1. Persist the transcription row
@@ -175,10 +176,10 @@ class TranscriptionRepositoryImpl @Inject constructor(
     override suspend fun updateText(id: String, text: String) = dao.updateText(id, text)
 
     private fun Transcription.toEntity() =
-        TranscriptionEntity(id, text, timestamp, model, audioPath, userId, synced, isFavorite, isPinned)
+        TranscriptionEntity(id, text, timestamp, model, audioPath, userId, synced, isFavorite, isPinned, rawTranscript = rawTranscript)
 
     private fun TranscriptionEntity.toDomain() =
-        Transcription(id, text, timestamp, model, audioPath, userId, synced, isFavorite, isPinned, syncStatus)
+        Transcription(id, text, timestamp, model, audioPath, userId, synced, isFavorite, isPinned, syncStatus, rawTranscript)
 
     companion object {
         private const val TAG = "TranscriptionRepo"

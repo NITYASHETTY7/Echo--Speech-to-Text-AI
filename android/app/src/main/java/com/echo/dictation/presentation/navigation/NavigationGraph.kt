@@ -23,13 +23,18 @@ object Routes {
 }
 
 @Composable
-fun NavigationGraph(navController: NavHostController) {
-    val context = LocalContext.current
-    val prefs = AppPreferences(context)
+fun NavigationGraph(navController: NavHostController, prefs: AppPreferences) {
+    // startDestination is computed once from the Hilt-managed singleton.
+    // Do NOT call AppPreferences(context) here — that creates a second instance
+    // outside the DI graph. Under R8 constructor optimizations (release build),
+    // the manually-constructed instance may not see the correct SharedPreferences
+    // state, causing onboardingCompleted to return false even when already set,
+    // which pushes an extra blank MAIN destination onto the back stack.
     val startDest = if (prefs.onboardingCompleted) Routes.MAIN else Routes.ONBOARDING
 
     NavHost(navController, startDestination = startDest) {
         composable(Routes.ONBOARDING) {
+            val context = LocalContext.current
             val authViewModel: AuthViewModel = hiltViewModel()
             val uiState by authViewModel.uiState.collectAsStateWithLifecycle()
 

@@ -57,6 +57,7 @@ class GrammarCorrectionService @Inject constructor(
         const val SYSTEM_PROMPT =
             "Correct grammar, punctuation, capitalization, spelling and formatting " +
             "without changing the meaning, wording or tone. " +
+            "Do not translate the text to another language; keep the original spoken language. " +
             "Do not summarize. " +
             "Do not remove information. " +
             "Return only the corrected transcript."

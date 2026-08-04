@@ -1,4 +1,4 @@
-﻿package com.echo.dictation.service.overlay
+package com.echo.dictation.service.overlay
 
 import android.content.ComponentCallbacks
 import android.content.Context
@@ -11,7 +11,6 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -25,8 +24,22 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.sqrt
+import kotlin.math.abs
 
+/**
+ * Manages the floating microphone overlay window.
+ *
+ * Interaction model (tap-to-record):
+ *   • First tap  → start recording (calls controller.toggleState())
+ *   • Second tap → stop recording  (calls controller.toggleState())
+ *   • Drag > [TAP_SLOP_DP] → reposition only, never toggles recording
+ *
+ * Snap-to-edge: on drag release the pill snaps to the nearer horizontal edge
+ * (left or right) with a [EDGE_MARGIN_DP] margin, preserving the Y position.
+ *
+ * Visibility: when [setVisibility] is called with `false` the view is set to
+ * [View.GONE] (no layout space, no touch events). `true` fades it in smoothly.
+ */
 @Singleton
 class PillWindowManager @Inject constructor(
     private val controller: PillController,
@@ -41,20 +54,24 @@ class PillWindowManager @Inject constructor(
     private var overlayContext: Context? = null
     private var callbacksContext: Context? = null
     private var lastRecordingState: Boolean? = null
-    private var focusVisible = false
+
+    // True when the overlay is supposed to be shown (focus + injection available).
+    private var shouldBeVisible = false
 
     private val componentCallbacks = object : ComponentCallbacks {
         override fun onConfigurationChanged(newConfig: Configuration) {
             val currentView = view ?: return
             val params = windowParams ?: return
             val context = overlayContext ?: return
-            clampPosition(context, params)
+            snapToEdge(context, params)
             runCatching { manager?.updateViewLayout(currentView, params) }
             persistPosition(params)
         }
 
         override fun onLowMemory() = Unit
     }
+
+    // ─── Public API ──────────────────────────────────────────────────────────
 
     fun show(context: Context, onClick: () -> Unit): Boolean {
         if (view != null) return true
@@ -71,19 +88,24 @@ class PillWindowManager @Inject constructor(
         } else {
             @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         }
+
         val pillSize = appContext.dp(PILL_SIZE_DP)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.RGBA_8888
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = preferences.floatingPillX.takeUnless { it == UNSET_POSITION } ?: 0
-            y = preferences.floatingPillY.takeUnless { it == UNSET_POSITION } ?: appContext.dp(DEFAULT_Y_DP)
+            x = preferences.floatingPillX.takeUnless { it == UNSET_POSITION }
+                ?: edgeSnappedX(appContext, isRight = true, pillSize = pillSize)
+            y = preferences.floatingPillY.takeUnless { it == UNSET_POSITION }
+                ?: appContext.dp(DEFAULT_Y_DP)
         }
-        clampPosition(appContext, params, pillSize)
+        // Ensure saved position is still on-screen and snapped after a resolution change.
+        snapToEdge(appContext, params, pillSize)
         windowParams = params
 
         val icon = ImageView(context).apply {
@@ -109,88 +131,25 @@ class PillWindowManager @Inject constructor(
             layoutParams = FrameLayout.LayoutParams(pillSize, pillSize)
             addView(icon)
             contentDescription = "Floating transcription pill"
-            // The overlay is present for touch handling and starts fully visible as confirmation
-            // that the service was enabled. It transitions to idle after the startup grace period.
             alpha = 1f
-            visibility = View.VISIBLE
+            // Start GONE — setVisibility(true) is called by PillOverlayService once a
+            // text-field is focused and injection is confirmed available.
+            visibility = View.GONE
             isClickable = true
             isEnabled = true
             isFocusable = false
             setOnClickListener {
-                Log.d(TAG, "Floating pill clicked")
+                Log.d(TAG, "Pill clicked → toggleState()")
                 onClick()
             }
         }
 
-        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-        var downRawX = 0f
-        var downRawY = 0f
-        var startX = 0
-        var startY = 0
-        var isDragging = false
-
-        pill.setOnTouchListener { touchedView, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downRawX = event.rawX
-                    downRawY = event.rawY
-                    startX = params.x
-                    startY = params.y
-                    isDragging = false
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    val deltaX = event.rawX - downRawX
-                    val deltaY = event.rawY - downRawY
-                    val distance = sqrt(deltaX * deltaX + deltaY * deltaY)
-
-                    if (!isDragging && distance > touchSlop) {
-                        isDragging = true
-                    }
-
-                    if (isDragging) {
-                        params.x = startX + deltaX.toInt()
-                        params.y = startY + deltaY.toInt()
-                        clampPosition(appContext, params, pillSize)
-                        runCatching { windowManager.updateViewLayout(touchedView, params) }
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP -> {
-                    if (isDragging) {
-                        clampPosition(appContext, params, pillSize)
-                        persistPosition(params)
-                    } else {
-                        // Route true taps through the existing click callback only.
-                        touchedView.performClick()
-                    }
-                    isDragging = false
-                    true
-                }
-
-                MotionEvent.ACTION_CANCEL -> {
-                    if (isDragging) {
-                        clampPosition(appContext, params, pillSize)
-                        persistPosition(params)
-                    }
-                    isDragging = false
-                    true
-                }
-
-                else -> true
-            }
-        }
+        pill.setOnTouchListener(buildTouchListener(pill, appContext, windowManager, params, pillSize, onClick))
 
         try {
             windowManager.addView(pill, params)
         } catch (error: Exception) {
-            Log.e(
-                TAG,
-                "Overlay add failed: ${error.javaClass.simpleName}: ${error.message}",
-                error
-            )
+            Log.e(TAG, "Overlay add failed: ${error.javaClass.simpleName}: ${error.message}", error)
             callbacksContext?.unregisterComponentCallbacks(componentCallbacks)
             callbacksContext = null
             manager = null
@@ -200,10 +159,10 @@ class PillWindowManager @Inject constructor(
             pillBackground = null
             return false
         }
+
         view = pill
-        Log.d(TAG, "Overlay created")
-        Log.d(TAG, "Overlay visible")
         applyPillState(controller.pillState.value)
+
         stateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
             scope.launch {
                 controller.pillState.collect { state ->
@@ -211,99 +170,53 @@ class PillWindowManager @Inject constructor(
                 }
             }
         }
-        Log.d(TAG, "Floating pill created")
+
+        Log.d(TAG, "Floating pill created (hidden until focus+injection ready)")
         return true
     }
 
-    private fun clampPosition(
-        context: Context,
-        params: WindowManager.LayoutParams,
-        pillSize: Int = context.dp(PILL_SIZE_DP)
-    ) {
-        val metrics = context.resources.displayMetrics
-        val visualSize = (pillSize * RECORDING_SCALE).toInt()
-        val maxX = (metrics.widthPixels - visualSize).coerceAtLeast(0)
-        val maxY = (metrics.heightPixels - visualSize).coerceAtLeast(0)
-        params.x = params.x.coerceIn(0, maxX)
-        params.y = params.y.coerceIn(0, maxY)
-    }
-
-    private fun persistPosition(params: WindowManager.LayoutParams) {
-        preferences.floatingPillX = params.x
-        preferences.floatingPillY = params.y
-    }
-
-    private fun applyPillState(pillState: PillState) {
-        val currentView = view ?: return
-        val isRecording     = pillState is PillState.Recording
-        val isTranscribing  = pillState is PillState.Transcribing
-        val wasRecording    = lastRecordingState == true
-
-        if (lastRecordingState != isRecording) {
-            Log.d(TAG, if (isRecording) "Recording started" else "Recording stopped")
-            lastRecordingState = isRecording
-        }
-
-        val bgColor = when {
-            isRecording    -> RECORDING_COLOR      // red
-            isTranscribing -> TRANSCRIBING_COLOR   // amber/orange
-            else           -> Color.BLACK
-        }
-        pillBackground?.setColor(bgColor)
-
-        micIcon?.setImageResource(
-            if (isRecording) R.drawable.ic_stop else R.drawable.ic_microphone
-        )
-
-        currentView.animate().cancel()
-        currentView.visibility = View.VISIBLE
-
-        val targetScale = when {
-            isRecording    -> RECORDING_SCALE
-            isTranscribing -> RECORDING_SCALE
-            else           -> NORMAL_SCALE
-        }
-        val animation = currentView.animate()
-            .scaleX(targetScale)
-            .scaleY(targetScale)
-            .setDuration(SCALE_ANIMATION_DURATION_MS)
-
-        if (isRecording || isTranscribing || wasRecording) {
-            animation.alpha(if (isRecording || isTranscribing || focusVisible) 1f else IDLE_ALPHA)
-        }
-        animation.start()
-    }
-
+    /**
+     * Show or completely hide the floating mic.
+     *
+     * Called by [PillOverlayService] whenever [FocusAndKeyboardDetector.shouldShowFloatingMic]
+     * changes. A `false` value collapses the view to [View.GONE] so it occupies no screen
+     * space and receives no touch events. A `true` value fades it in.
+     *
+     * If the user is currently recording or transcribing the pill stays visible regardless,
+     * so an in-progress session is never hidden mid-recording.
+     */
     fun setVisibility(visible: Boolean) {
-        focusVisible = visible
+        shouldBeVisible = visible
         val currentView = view ?: return
-        currentView.animate().cancel()
-        currentView.visibility = View.VISIBLE
 
-        // Keep the pill fully visible while recording OR transcribing.
-        if (lastRecordingState == true) return
-        if (controller.pillState.value is PillState.Transcribing) return
+        // Never hide while an active session is in progress.
+        val activeSession = lastRecordingState == true ||
+                controller.pillState.value is PillState.Transcribing
+        if (activeSession) return
+
+        currentView.animate().cancel()
 
         if (visible) {
+            currentView.alpha = 0f
+            currentView.visibility = View.VISIBLE
             currentView.animate()
                 .alpha(1f)
                 .setDuration(VISIBILITY_ANIMATION_DURATION_MS)
-                .withEndAction {
-                    currentView.alpha = 1f
-                    currentView.visibility = View.VISIBLE
-                    Log.d(TAG, "Overlay visible")
-                }
+                .withEndAction { currentView.alpha = 1f }
                 .start()
+            Log.d(TAG, "Mic shown (focus+injection available)")
         } else {
-            currentView.animate()
-                .alpha(IDLE_ALPHA)
-                .setDuration(VISIBILITY_ANIMATION_DURATION_MS)
-                .withEndAction {
-                    currentView.alpha = IDLE_ALPHA
-                    currentView.visibility = View.VISIBLE
-                    Log.d(TAG, "Overlay faded")
-                }
-                .start()
+            if (currentView.visibility != View.GONE) {
+                currentView.animate()
+                    .alpha(0f)
+                    .setDuration(VISIBILITY_ANIMATION_DURATION_MS)
+                    .withEndAction {
+                        currentView.visibility = View.GONE
+                        currentView.alpha = 1f  // reset so the fade-in next time starts clean
+                    }
+                    .start()
+                Log.d(TAG, "Mic hidden (focus/injection unavailable)")
+            }
         }
     }
 
@@ -313,15 +226,11 @@ class PillWindowManager @Inject constructor(
         callbacksContext?.unregisterComponentCallbacks(componentCallbacks)
         callbacksContext = null
         view?.let { currentView ->
-            try {
+            runCatching {
                 manager?.removeView(currentView)
                 Log.d(TAG, "Overlay removed from WindowManager")
-            } catch (error: Exception) {
-                Log.e(
-                    TAG,
-                    "Overlay remove failed: ${error.javaClass.simpleName}: ${error.message}",
-                    error
-                )
+            }.onFailure { e ->
+                Log.e(TAG, "Overlay remove failed: ${e.javaClass.simpleName}: ${e.message}", e)
             }
         }
         view = null
@@ -331,23 +240,222 @@ class PillWindowManager @Inject constructor(
         micIcon = null
         pillBackground = null
         lastRecordingState = null
-        focusVisible = false
+        shouldBeVisible = false
     }
+
+    // ─── Touch handler (drag + tap-to-record) ────────────────────────────────
+
+    /**
+     * State machine:
+     *
+     *   ACTION_DOWN  → record raw start position; mark isDragging = false
+     *   ACTION_MOVE  → if displacement > [TAP_SLOP_DP] set isDragging = true and
+     *                  reposition the window in real time (60 FPS)
+     *   ACTION_UP    → if isDragging: snap to nearest edge, persist position
+     *                  if tap:        delegate to performClick() → toggleState()
+     *   ACTION_CANCEL→ if isDragging: snap and persist; recording untouched
+     */
+    private fun buildTouchListener(
+        pill: FrameLayout,
+        appContext: Context,
+        windowManager: WindowManager,
+        params: WindowManager.LayoutParams,
+        pillSize: Int,
+        onClick: () -> Unit
+    ) = View.OnTouchListener { touchedView, event ->
+        when (event.actionMasked) {
+
+            MotionEvent.ACTION_DOWN -> {
+                touchState.downRawX = event.rawX
+                touchState.downRawY = event.rawY
+                touchState.startX   = params.x
+                touchState.startY   = params.y
+                touchState.isDragging = false
+                true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - touchState.downRawX
+                val dy = event.rawY - touchState.downRawY
+
+                if (!touchState.isDragging) {
+                    val distanceDp = appContext.pxToDp(
+                        kotlin.math.sqrt(dx * dx + dy * dy)
+                    )
+                    if (distanceDp > TAP_SLOP_DP) {
+                        touchState.isDragging = true
+                        Log.d(TAG, "Drag started (${distanceDp.toInt()}dp)")
+                    }
+                }
+
+                if (touchState.isDragging) {
+                    params.x = (touchState.startX + dx.toInt()).coerceIn(0, maxX(appContext, pillSize))
+                    params.y = (touchState.startY + dy.toInt()).coerceIn(0, maxY(appContext, pillSize))
+                    runCatching { windowManager.updateViewLayout(touchedView, params) }
+                }
+                true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                if (touchState.isDragging) {
+                    // Snap to the nearest horizontal edge.
+                    snapToEdge(appContext, params, pillSize)
+                    runCatching { windowManager.updateViewLayout(touchedView, params) }
+                    persistPosition(params)
+                    Log.d(TAG, "Drag released → snapped to x=${params.x}")
+                } else {
+                    // Pure tap — route through the click listener → toggleState().
+                    Log.d(TAG, "Tap detected → performClick()")
+                    touchedView.performClick()
+                }
+                touchState.isDragging = false
+                true
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                if (touchState.isDragging) {
+                    // System interrupted drag (e.g. notification shade). Snap and save.
+                    snapToEdge(appContext, params, pillSize)
+                    runCatching { windowManager.updateViewLayout(touchedView, params) }
+                    persistPosition(params)
+                    Log.d(TAG, "Drag cancelled → snapped to x=${params.x}")
+                }
+                touchState.isDragging = false
+                true
+            }
+
+            else -> false
+        }
+    }
+
+    // Single object to avoid repeated local-variable allocation inside the touch listener.
+    private val touchState = object {
+        var downRawX  = 0f
+        var downRawY  = 0f
+        var startX    = 0
+        var startY    = 0
+        var isDragging = false
+    }
+
+    // ─── Position helpers ────────────────────────────────────────────────────
+
+    /**
+     * Snap params.x to the nearer of the left or right edge, maintaining [EDGE_MARGIN_DP].
+     * params.y is unchanged (vertical position is fully free-form).
+     */
+    private fun snapToEdge(
+        context: Context,
+        params: WindowManager.LayoutParams,
+        pillSize: Int = context.dp(PILL_SIZE_DP)
+    ) {
+        val metrics    = context.resources.displayMetrics
+        val screenW    = metrics.widthPixels
+        val margin     = context.dp(EDGE_MARGIN_DP)
+        val rightEdgeX = screenW - pillSize - margin
+
+        // Clamp Y so the pill stays fully on screen.
+        val maxYPx = maxY(context, pillSize)
+        params.y = params.y.coerceIn(0, maxYPx)
+
+        // Snap X to whichever edge is closer.
+        val centerX = params.x + pillSize / 2
+        params.x = if (centerX < screenW / 2) margin else rightEdgeX
+    }
+
+    private fun edgeSnappedX(context: Context, isRight: Boolean, pillSize: Int): Int {
+        val metrics = context.resources.displayMetrics
+        val margin  = context.dp(EDGE_MARGIN_DP)
+        return if (isRight) metrics.widthPixels - pillSize - margin else margin
+    }
+
+    private fun maxX(context: Context, pillSize: Int = context.dp(PILL_SIZE_DP)): Int {
+        val scale = if (lastRecordingState == true) RECORDING_SCALE else NORMAL_SCALE
+        return (context.resources.displayMetrics.widthPixels - pillSize * scale).toInt()
+            .coerceAtLeast(0)
+    }
+
+    private fun maxY(context: Context, pillSize: Int = context.dp(PILL_SIZE_DP)): Int {
+        val scale = if (lastRecordingState == true) RECORDING_SCALE else NORMAL_SCALE
+        return (context.resources.displayMetrics.heightPixels - pillSize * scale).toInt()
+            .coerceAtLeast(0)
+    }
+
+    private fun persistPosition(params: WindowManager.LayoutParams) {
+        preferences.floatingPillX = params.x
+        preferences.floatingPillY = params.y
+    }
+
+    // ─── Visual state ────────────────────────────────────────────────────────
+
+    private fun applyPillState(pillState: PillState) {
+        val currentView = view ?: return
+        val isRecording    = pillState is PillState.Recording
+        val isTranscribing = pillState is PillState.Transcribing
+        val wasRecording   = lastRecordingState == true
+
+        if (lastRecordingState != isRecording) {
+            Log.d(TAG, if (isRecording) "Recording started" else "Recording stopped")
+            lastRecordingState = isRecording
+        }
+
+        // While recording or transcribing, force visibility regardless of focus state.
+        if (isRecording || isTranscribing) {
+            currentView.visibility = View.VISIBLE
+            currentView.alpha = 1f
+        } else if (wasRecording) {
+            // Session just ended — re-apply the current shouldBeVisible state.
+            // Use setVisibility() so the correct GONE/VISIBLE + animation is applied.
+            setVisibility(shouldBeVisible)
+        }
+
+        val bgColor = when {
+            isRecording    -> RECORDING_COLOR
+            isTranscribing -> TRANSCRIBING_COLOR
+            else           -> Color.BLACK
+        }
+        pillBackground?.setColor(bgColor)
+
+        micIcon?.setImageResource(
+            if (isRecording) R.drawable.ic_stop else R.drawable.ic_microphone
+        )
+
+        currentView.animate().cancel()
+        val targetScale = if (isRecording || isTranscribing) RECORDING_SCALE else NORMAL_SCALE
+        currentView.animate()
+            .scaleX(targetScale)
+            .scaleY(targetScale)
+            .setDuration(SCALE_ANIMATION_DURATION_MS)
+            .start()
+    }
+
+    // ─── Utilities ────────────────────────────────────────────────────────────
 
     private fun Context.dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
+    private fun Context.pxToDp(px: Float): Float =
+        px / resources.displayMetrics.density
+
+    // ─── Constants ────────────────────────────────────────────────────────────
+
     companion object {
         private const val TAG = "PillWindowManager"
-        private const val PILL_SIZE_DP = 56
-        private const val DEFAULT_Y_DP = 160
+
+        private const val PILL_SIZE_DP  = 56
+        private const val DEFAULT_Y_DP  = 160
+        private const val EDGE_MARGIN_DP = 16
+
+        /** Any finger movement beyond this dp threshold during a touch is classified as a drag. */
+        private const val TAP_SLOP_DP = 10f
+
         private const val UNSET_POSITION = Int.MIN_VALUE
-        private const val RECORDING_COLOR = 0xffc62828.toInt()
-        private const val TRANSCRIBING_COLOR = 0xffe65100.toInt()  // deep amber — "processing"
-        private const val RECORDING_SCALE = 1.1f
-        private const val NORMAL_SCALE = 1f
-        private const val IDLE_ALPHA = 0.3f
-        private const val SCALE_ANIMATION_DURATION_MS = 120L
+
+        private const val RECORDING_COLOR   = 0xffc62828.toInt()   // deep red
+        private const val TRANSCRIBING_COLOR = 0xffe65100.toInt()  // deep amber
+
+        private const val RECORDING_SCALE           = 1.1f
+        private const val NORMAL_SCALE              = 1f
+        private const val SCALE_ANIMATION_DURATION_MS   = 120L
         private const val VISIBILITY_ANIMATION_DURATION_MS = 200L
     }
 }

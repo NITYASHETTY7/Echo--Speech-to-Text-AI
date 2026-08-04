@@ -54,11 +54,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -92,6 +96,7 @@ import com.echo.dictation.presentation.theme.OutlineColor
 import com.echo.dictation.presentation.theme.Primary
 import com.echo.dictation.presentation.theme.PrimaryColor
 import com.echo.dictation.presentation.theme.PrimaryVariant
+import com.echo.dictation.service.overlay.PillOverlayService
 
 @Composable
 fun SettingsScreen(
@@ -108,6 +113,34 @@ fun SettingsScreen(
     val currentUser by authViewModel.currentUser.collectAsState()
     val isAuthenticated by authViewModel.isAuthenticated.collectAsState()
     val authUiState by authViewModel.uiState.collectAsState()
+
+    // Track overlay permission — re-checked on every resume so we detect when
+    // the user grants "Draw over other apps" in system settings and comes back.
+    var hasOverlayPermission by remember {
+        mutableStateOf(
+            android.os.Build.VERSION.SDK_INT < 23 ||
+                android.provider.Settings.canDrawOverlays(context)
+        )
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = android.os.Build.VERSION.SDK_INT < 23 ||
+                    android.provider.Settings.canDrawOverlays(context)
+                hasOverlayPermission = granted
+                // If the toggle is ON and permission was just granted (user returned
+                // from system settings), start the service now — this is the fix for
+                // the first-enable bug where the service stopped itself because
+                // permission wasn't granted at the time of the first start.
+                if (granted && state.floatingPillEnabled && !PillOverlayService.isRunning.value) {
+                    PillOverlayService.start(context)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -220,7 +253,6 @@ fun SettingsScreen(
                             if (text.isNotBlank()) viewModel.onApiKeyChanged(text)
                         },
                         onClear = { viewModel.onClearKey() },
-                        onSave  = { viewModel.onSaveKey() },
                     )
                     // Provider API key link
                     ApiKeyLink(providerId = state.selectedProvider)
@@ -230,24 +262,13 @@ fun SettingsScreen(
                 SettingsCard {
                     SettingsLabel("Model")
                     Spacer(Modifier.height(8.dp))
-                    val models = state.providerConfig.models
-                    if (models.isEmpty() || state.providerConfig.requiresCustomModel) {
-                        // Free-text model entry for Azure / Custom
-                        OutlinedTextField(
-                            value         = state.selectedModel,
-                            onValueChange = { viewModel.onModelSelected(it) },
-                            modifier      = Modifier.fillMaxWidth(),
-                            label         = { Text("Model name") },
-                            singleLine    = true,
-                            colors        = echoTextFieldColors(),
-                        )
-                    } else {
-                        ModelDropdown(
-                            selected  = state.selectedModel,
-                            models    = models,
-                            onSelect  = { viewModel.onModelSelected(it) },
-                        )
-                    }
+                    ModelSection(
+                        selectedModel   = state.selectedModel,
+                        availableModels = state.availableModels,
+                        modelLoadState  = state.modelLoadState,
+                        requiresCustomModel = state.providerConfig.requiresCustomModel,
+                        onModelSelected = { viewModel.onModelSelected(it) },
+                    )
                 }
 
                 // Test connection
@@ -258,7 +279,86 @@ fun SettingsScreen(
                     )
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(8.dp))
+
+                // ── Floating Pill section ─────────────────────────────────────
+                SectionHeader("Floating Pill")
+
+                SettingsCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier              = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment     = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text  = "Floating Microphone",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text  = "Show the floating mic button over other apps when a text field is focused.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = OnSurfaceVariant,
+                                    modifier = Modifier.alpha(0.8f),
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(
+                                checked         = state.floatingPillEnabled,
+                                onCheckedChange = { enabled ->
+                                    viewModel.onFloatingPillToggled(enabled)
+                                    if (enabled) {
+                                        if (hasOverlayPermission) {
+                                            // Permission already granted — start immediately.
+                                            PillOverlayService.start(context)
+                                        } else {
+                                            // No overlay permission yet — open system settings.
+                                            // The ON_RESUME observer will start the service once
+                                            // the user grants permission and returns here.
+                                            context.startActivity(
+                                                android.content.Intent(
+                                                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                    android.net.Uri.parse("package:${context.packageName}")
+                                                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            )
+                                        }
+                                    } else {
+                                        PillOverlayService.stop(context)
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                                    checkedTrackColor = Primary,
+                                ),
+                            )
+                        }
+
+                        // Nudge shown when the toggle is ON but permission isn't granted yet.
+                        AnimatedVisibility(visible = state.floatingPillEnabled && !hasOverlayPermission) {
+                            Row(
+                                verticalAlignment     = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Circle,
+                                    contentDescription = null,
+                                    tint     = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Text(
+                                    text  = "\"Draw over other apps\" permission required. " +
+                                            "Grant it in the system settings that just opened, then return here.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
 
                 // ── General section ───────────────────────────────────────────
                 SectionHeader("General")
@@ -319,6 +419,91 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(32.dp))
             }
+        }
+    }
+}
+
+// ─── Model section (handles static list, dynamic Gemini list, loading, error) ──
+
+@Composable
+private fun ModelSection(
+    selectedModel: String,
+    availableModels: List<String>,
+    modelLoadState: ModelLoadState,
+    requiresCustomModel: Boolean,
+    onModelSelected: (String) -> Unit,
+) {
+    when {
+        // Loading spinner (Gemini fetch in progress)
+        modelLoadState is ModelLoadState.Loading -> {
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier              = Modifier.fillMaxWidth(),
+            ) {
+                CircularProgressIndicator(
+                    modifier    = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color       = Primary,
+                )
+                Text(
+                    "Loading available models…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceVariant,
+                )
+            }
+        }
+
+        // Error state — show message and fall back to free-text entry
+        modelLoadState is ModelLoadState.Error -> {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    verticalAlignment     = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.Circle,
+                        contentDescription = null,
+                        tint     = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        modelLoadState.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                // Still let the user type a model name manually
+                OutlinedTextField(
+                    value         = selectedModel,
+                    onValueChange = onModelSelected,
+                    modifier      = Modifier.fillMaxWidth(),
+                    label         = { Text("Model name") },
+                    singleLine    = true,
+                    colors        = echoTextFieldColors(),
+                )
+            }
+        }
+
+        // Providers that require free-text (Azure, Custom), or Gemini before key is saved
+        requiresCustomModel || availableModels.isEmpty() -> {
+            OutlinedTextField(
+                value         = selectedModel,
+                onValueChange = onModelSelected,
+                modifier      = Modifier.fillMaxWidth(),
+                label         = { Text("Model name") },
+                singleLine    = true,
+                colors        = echoTextFieldColors(),
+            )
+        }
+
+        // Normal dropdown (static list or freshly-fetched Gemini list)
+        else -> {
+            ModelDropdown(
+                selected = selectedModel,
+                models   = availableModels,
+                onSelect = onModelSelected,
+            )
         }
     }
 }
@@ -497,7 +682,6 @@ private fun ApiKeyField(
     onToggleVisibility: () -> Unit,
     onPaste: () -> Unit,
     onClear: () -> Unit,
-    onSave: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -506,61 +690,73 @@ private fun ApiKeyField(
             modifier      = Modifier.fillMaxWidth(),
             placeholder   = {
                 Text(
-                    if (hasStoredKey) "Key saved — enter new key to replace"
+                    // When a key is already stored the field is blank — hint
+                    // that typing here replaces the saved key.
+                    if (hasStoredKey) "Type to replace saved key"
                     else "Enter your $providerName API key",
                     color = OnSurfaceVariant.copy(alpha = 0.6f),
                 )
             },
             visualTransformation = if (keyVisible) VisualTransformation.None
                                    else PasswordVisualTransformation(),
-            singleLine    = true,
+            singleLine      = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            trailingIcon  = {
+            trailingIcon    = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // Paste
                     IconButton(onClick = onPaste, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.ContentPaste, "Paste", tint = OnSurfaceVariant, modifier = Modifier.size(18.dp))
                     }
-                    // Clear
+                    // Clear — visible when there is text in the field OR a stored key
                     if (value.isNotEmpty() || hasStoredKey) {
                         IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
-                            Icon(Icons.Default.Clear, "Clear", tint = OnSurfaceVariant, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Clear, "Clear key", tint = OnSurfaceVariant, modifier = Modifier.size(18.dp))
                         }
                     }
-                    // Show/hide
+                    // Show / hide
                     IconButton(onClick = onToggleVisibility, modifier = Modifier.size(36.dp)) {
                         Icon(
-                            imageVector = if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            imageVector        = if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = if (keyVisible) "Hide key" else "Show key",
-                            tint = OnSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
+                            tint               = OnSurfaceVariant,
+                            modifier           = Modifier.size(18.dp),
                         )
                     }
                 }
             },
             colors = echoTextFieldColors(),
         )
-        // Save button — only enabled when there's text to save
+
+        // "Saving…" hint while the user is actively typing (field not empty)
         AnimatedVisibility(visible = value.isNotBlank()) {
-            Button(
-                onClick  = onSave,
-                modifier = Modifier.fillMaxWidth(),
-                colors   = ButtonDefaults.buttonColors(containerColor = Primary),
-                shape    = RoundedCornerShape(10.dp),
-            ) {
-                Text("Save Key", color = MaterialTheme.colorScheme.onPrimary)
-            }
-        }
-        if (hasStoredKey && value.isBlank()) {
             Text(
-                "✓ API key saved",
+                "Saving automatically…",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF66BB6A),
+                color = OnSurfaceVariant.copy(alpha = 0.7f),
             )
+        }
+
+        // "API key saved" indicator — shown when stored and field is empty
+        AnimatedVisibility(visible = hasStoredKey && value.isBlank()) {
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint     = Color(0xFF66BB6A),
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    "API key saved",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF66BB6A),
+                )
+            }
         }
     }
 }
-
 // ─── Model dropdown ───────────────────────────────────────────────────────────
 
 @Composable

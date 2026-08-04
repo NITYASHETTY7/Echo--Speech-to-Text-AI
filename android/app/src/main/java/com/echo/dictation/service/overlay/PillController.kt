@@ -76,15 +76,15 @@ class PillController @Inject constructor(
     fun toggleState() {
         Log.d(TAG, "toggleState() current=${state.value}")
         when (state.value) {
-            is PillState.Idle         -> startRecording()
-            is PillState.Recording    -> stopRecording()
+            is PillState.Idle         -> startRecordingInternal()
+            is PillState.Recording    -> stopRecordingInternal()
             is PillState.Transcribing -> cancelTranscription()
         }
     }
 
     // ─── Start ───────────────────────────────────────────────────────────────
 
-    private fun startRecording() {
+    private fun startRecordingInternal() {
         // Echo requires internet for Groq Whisper STT — block recording when offline
         if (!syncManager.isOnline.value) {
             showToast("Internet connection required to transcribe speech.")
@@ -142,7 +142,7 @@ class PillController @Inject constructor(
 
     // ─── Stop → transcribe ────────────────────────────────────────────────────
 
-    private fun stopRecording() {
+    private fun stopRecordingInternal() {
         Log.d(TAG, "Stop recording requested")
 
         val nodeAtTapTime = TextInsertionAccessibilityService.instance?.lastEditableNode

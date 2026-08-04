@@ -56,7 +56,9 @@ object ProviderRegistry {
             id             = ProviderId.GEMINI,
             displayName    = "Google Gemini",
             defaultBaseUrl = "https://generativelanguage.googleapis.com/",
-            models         = listOf("gemini-2.0-flash", "gemini-1.5-flash"),
+            // Models are discovered dynamically at runtime via GeminiModelResolver.
+            // Never hardcode model names here — they change when Google updates their API.
+            models         = emptyList(),
             authHeaderName = "x-goog-api-key",
             authValueFormat = "%s",           // header value IS the key directly
         ),

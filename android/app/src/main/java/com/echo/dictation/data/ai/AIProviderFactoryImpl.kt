@@ -25,7 +25,7 @@ import javax.inject.Singleton
  * │ GROQ         │ Groq Chat Completions (llama-3.3-70b-versatile default)       │
  * │ OPENAI       │ OpenAI Chat Completions (gpt-4.1 default)                     │
  * │ OPENROUTER   │ OpenRouter Chat Completions (user-selected model)             │
- * │ GEMINI       │ Google Gemini REST API (gemini-2.5-flash default)             │
+ * │ GEMINI       │ Google Gemini REST API (model resolved dynamically via GeminiModelResolver) │
  * │ AZURE        │ Azure OpenAI Chat Completions (user-configured deployment)    │
  * │ BEDROCK      │ AWS Bedrock Converse API (user-selected model)                │
  * │ CUSTOM       │ OpenAI-Compatible endpoint (user-configured)                  │
@@ -38,6 +38,7 @@ class AIProviderFactoryImpl @Inject constructor(
     private val keyStore: ProviderKeyStore,
     private val settings: ProviderSettings,
     private val httpClient: OkHttpClient,
+    private val modelResolver: com.echo.dictation.speech.provider.GeminiModelResolver,
 ) : AIProviderFactory {
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -101,9 +102,9 @@ class AIProviderFactoryImpl @Inject constructor(
             )
 
             ProviderId.GEMINI   -> GeminiAIProvider(
-                apiKey     = apiKey,
-                httpClient = httpClient,
-                modelOverride = settings.selectedModel.takeIf { it.isNotBlank() },
+                apiKey        = apiKey,
+                httpClient    = httpClient,
+                modelResolver = modelResolver,
             )
 
             ProviderId.AZURE    -> {

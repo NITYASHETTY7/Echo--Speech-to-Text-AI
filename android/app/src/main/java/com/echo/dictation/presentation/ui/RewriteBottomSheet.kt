@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Email
@@ -73,21 +74,22 @@ fun RewriteBottomSheet(
     customPromptText: String,
     onCustomPromptChanged: (String) -> Unit,
     onPresetSelected: (String) -> Unit,
-    onTranslateSelected: (String) -> Unit,
     onCustomPromptSubmit: () -> Unit,
     onDismiss: () -> Unit,
+    outputLanguage: String = "English",
+    onOutputLanguageChanged: (String) -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     var selectedTab by remember { mutableIntStateOf(0) }
-    var showLanguagePicker by remember { mutableStateOf(false) }
+    var showOutputLanguagePicker by remember { mutableStateOf(false) }
 
-    if (showLanguagePicker) {
+    if (showOutputLanguagePicker) {
         TranslationLanguagePickerDialog(
             onLanguageSelected = { language ->
-                showLanguagePicker = false
-                onTranslateSelected(language)
+                showOutputLanguagePicker = false
+                onOutputLanguageChanged(language)
             },
-            onDismiss = { showLanguagePicker = false }
+            onDismiss = { showOutputLanguagePicker = false }
         )
     }
 
@@ -120,21 +122,59 @@ fun RewriteBottomSheet(
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
         ) {
+            // ── Header: title + global language selector ───────────────────
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Icon(
-                    imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = null,
-                    tint = Primary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Text(
-                    text = "AI Rewrite Engine",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = Primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = "AI Rewrite Engine",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+
+                // Compact output-language chip: 🌐 English ▼
+                androidx.compose.foundation.layout.Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Primary.copy(alpha = 0.10f))
+                        .clickable { showOutputLanguagePicker = true }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Language,
+                        contentDescription = "Output language",
+                        tint = Primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        text = outputLanguage,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = Primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -160,10 +200,7 @@ fun RewriteBottomSheet(
 
             if (selectedTab == 0) {
                 PresetsTab(
-                    onPresetSelected = { id ->
-                        if (id == "translate") showLanguagePicker = true
-                        else onPresetSelected(id)
-                    }
+                    onPresetSelected = { id -> onPresetSelected(id) }
                 )
             } else {
                 CustomPromptTab(

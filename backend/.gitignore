@@ -42,6 +42,7 @@ build/*.app
 *.dmg
 *.zip
 
+
 # PyInstaller backend freeze artifacts
 build-backend/
 
