@@ -37,6 +37,11 @@ final class FloatingPillManager {
     /// Current recording session, if one is active.
     private(set) var recordingViewModel: RecordingViewModel?
 
+    /// Set to true when stopRecording() is called before (or during) the start
+    /// sequence.  Checked inside startAndMaybeStop() after recording begins —
+    /// if true, the recording is stopped immediately.
+    private var pendingStop: Bool = false
+
     /// True while recording OR while the keyboard is visible — pill is fully opaque.
     /// False (idle) → pill fades to `idleOpacity`.
     var isActive: Bool {
@@ -66,8 +71,10 @@ final class FloatingPillManager {
 
     // MARK: - Recording session
 
-    /// Builds a fresh RecordingViewModel from the supplied dependencies and starts recording.
-    /// No-op if a session is already active.
+    /// Builds a fresh RecordingViewModel, starts recording, then — if
+    /// stopRecording() was already called (quick hold-and-release) — stops
+    /// immediately.  Everything runs in a single serial Task so there is no
+    /// window where a stop can be lost.
     func startRecording(
         store: any TranscriptionStoreProtocol,
         keychainStore: KeychainStore,
@@ -78,13 +85,9 @@ final class FloatingPillManager {
     ) {
         guard recordingViewModel == nil else { return }
 
-        let recorder = AudioRecorder()
-        let factory  = ProviderFactory(keychainStore: keychainStore, providerSettings: providerSettings)
-        let pipeline = DefaultTranscriptionPipeline(providerFactory: factory)
-        // TranscriptionCoordinator accepts 'any TranscriptionStoreProtocol' via its
-        // store parameter typed as TranscriptionStore?; pass nil and let the
-        // coordinator work without in-coordinator persistence — the pipeline writes
-        // via the coordinator's own store reference set below.
+        let recorder    = AudioRecorder()
+        let factory     = ProviderFactory(keychainStore: keychainStore, providerSettings: providerSettings)
+        let pipeline    = DefaultTranscriptionPipeline(providerFactory: factory)
         let coordinator = TranscriptionCoordinator(
             pipeline: pipeline,
             preferences: preferences,
@@ -95,19 +98,45 @@ final class FloatingPillManager {
         )
         let rvm = RecordingViewModel(recorder: recorder, coordinator: coordinator)
         recordingViewModel = rvm
+        pendingStop = false
 
-        Task { await rvm.startRecording() }
-        logger.debug("FloatingPillManager: recording session started")
+        Task {
+            // startRecording() handles permission + session + AVAudioRecorder.record()
+            // all in one await — when it returns the recorder is either .recording
+            // or .failed.  There is no intermediate state left after this await.
+            await rvm.startRecording()
+
+            // If the finger was already lifted while we were starting, stop now.
+            if pendingStop {
+                pendingStop = false
+                if rvm.isRecording {
+                    await rvm.stopRecording()
+                } else {
+                    // startRecording failed (permission denied, etc.) — clean up.
+                    finishSession()
+                }
+            }
+        }
+        logger.debug("FloatingPillManager: recording session enqueued")
     }
 
-    /// Stops the active recording and hands off to the transcription pipeline.
+    /// Stops the active recording.  If called before the recorder has reached
+    /// `.recording` (quick hold-and-release), sets `pendingStop` so the start
+    /// Task stops the recorder as soon as it finishes starting.
     func stopRecording() async {
         guard let rvm = recordingViewModel else { return }
-        await rvm.stopRecording()
+        if rvm.isRecording {
+            await rvm.stopRecording()
+        } else {
+            // Recorder hasn't started yet — mark for deferred stop.
+            pendingStop = true
+            logger.debug("FloatingPillManager: pendingStop set (recorder not yet recording)")
+        }
     }
 
     /// Cancels the active recording and discards the file.
     func cancelRecording() {
+        pendingStop = false
         recordingViewModel?.cancelRecording()
         finishSession()
     }
@@ -149,6 +178,7 @@ final class FloatingPillManager {
 
     /// Tears down the recording session state.
     func finishSession() {
+        pendingStop = false
         recordingViewModel = nil
         logger.debug("FloatingPillManager: session finished")
     }

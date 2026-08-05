@@ -5,25 +5,39 @@
 //  Draggable floating microphone pill — the iOS equivalent of Android's
 //  PillOverlayService / PillWindowManager / PillController.
 //
-//  Feature map vs Android:
-//  ┌──────────────────────────────────────────────┬──────────────┬───────────┐
-//  │ Feature                                      │ Android      │ iOS       │
-//  ├──────────────────────────────────────────────┼──────────────┼───────────┤
-//  │ Draggable within Echo                        │ ✅           │ ✅        │
-//  │ Edge-snapping on release                     │ ✅           │ ✅        │
-//  │ Position persisted across launches           │ ✅           │ ✅        │
-//  │ Idle opacity (35%) when no keyboard/recording│ ✅           │ ✅        │
-//  │ Full opacity when keyboard visible           │ ✅           │ ✅        │
-//  │ Live recording state on pill                 │ ✅           │ ✅        │
-//  │ Text injection into focused in-app field     │ ✅           │ ✅        │
-//  │ Draw over OTHER apps (SYSTEM_ALERT_WINDOW)   │ ✅           │ ❌ (iOS)  │
-//  │ Inject text into OTHER apps (a11y service)   │ ✅           │ ❌ (iOS)  │
-//  └──────────────────────────────────────────────┴──────────────┴───────────┘
+//  ─────────────────────────────────────────────────────────────────────────
+//  Gesture architecture — single-gesture state machine
+//  ─────────────────────────────────────────────────────────────────────────
+//  A SINGLE `DragGesture(minimumDistance: 0)` owns the ENTIRE touch lifecycle.
+//  This is the only reliable way to receive a "touch-up" event for an
+//  arbitrarily long hold:
 //
-//  The overlay and injection protocols are isolated so a future entitlement
-//  (e.g. keyboard extension) can provide cross-app injection without changing
-//  any UI code.
+//    • DragGesture(minimumDistance: 0).onChanged fires immediately on touch-down
+//      (translation == .zero) and on every movement.
+//    • DragGesture.onEnded is GUARANTEED to fire when the finger lifts — anywhere
+//      on screen, regardless of how long the finger was held or where it moved.
 //
+//  Why NOT LongPressGesture (the previous bug):
+//    LongPressGesture is a DISCRETE recognizer.  It completes and fires onEnded
+//    at `minimumDuration` (while the finger is still down) and then STOPS
+//    tracking the touch.  It never reports finger-lift, and its @GestureState
+//    resets at the completion point — so the release event never reached the
+//    stop-recording logic and recording ran forever.
+//
+//  Touch disambiguation (tap vs. hold vs. drag) via a cancellable timer:
+//
+//    TOUCH DOWN ─┬─ move > 8pt before timer ───────────────► DRAG  (reposition)
+//                │
+//                ├─ still held ≥ holdDelay (timer fires) ───► HOLD  (record while held)
+//                │                                            release → stop
+//                │
+//                └─ lifts before timer, < 8pt movement ─────► TAP   (toggle record)
+//
+//  • Drag never starts recording (timer is cancelled the moment drag begins).
+//  • Hold starts recording when the timer fires and ALWAYS stops on release
+//    (onEnded), because the single DragGesture owns the whole lifecycle.
+//  • Tap toggles recording (start when idle, stop when recording).
+//  ─────────────────────────────────────────────────────────────────────────
 
 import SwiftUI
 import EchoCore
@@ -39,86 +53,236 @@ private extension Color {
 
 struct FloatingPillView: View {
 
-    // MARK: - Manager (reference type — mutates recording session)
+    // MARK: - Manager
 
     let manager: FloatingPillManager
 
     // MARK: - Callbacks to HomeView
 
     let onTranscriptReady: (Transcription) -> Void
-    /// Called with the InsertionResult after every successful transcription so
-    /// HomeView can show the clipboard toast when result == .copiedToClipboard.
     let onInsertionResult: (InsertionResult) -> Void
     let onError: () -> Void
     let startRecording: () -> Void
 
-    // MARK: - Dependencies for transcript store lookup
+    // MARK: - Environment
 
     @Environment(\.transcriptionStore) private var transcriptionStore
     @Environment(Preferences.self)     private var preferences
 
-    // MARK: - Drag / position state
+    // MARK: - Position state
 
-    /// Current position of the pill's centre.
-    @State private var position: CGPoint = .zero
-    /// Accumulated drag offset during an active gesture.
-    @State private var dragOffset: CGSize = .zero
-    /// True while the user is actively dragging.
-    @State private var isDragging: Bool = false
+    @State private var position:   CGPoint = .zero
+    @State private var dragOffset: CGSize  = .zero
+    @State private var isDragging: Bool    = false
 
-    // MARK: - Screen geometry (read once in onAppear, updated on rotation)
+    // MARK: - Touch state machine
+
+    /// The interaction the current touch has resolved into.
+    private enum TouchMode { case undecided, drag, hold }
+
+    @State private var touchMode:           TouchMode = .undecided
+    @State private var touchStartTime:      Date?     = nil
+    /// Cancellable timer that promotes a still touch into a hold after `holdDelay`.
+    @State private var holdTask:            Task<Void, Never>? = nil
+    /// Set true the moment the hold timer fires and startRecording() is called.
+    /// Stays true until onEnded resets it, ensuring stopRecording() is always
+    /// called on release even if recordingViewModel is not yet set (race window).
+    @State private var holdStartedRecording: Bool = false
+
+    // MARK: - Screen geometry
 
     @State private var screenSize: CGSize = UIScreen.main.bounds.size
 
-    // MARK: - Pill dimensions
+    // MARK: - Tunables
 
-    private let pillW: CGFloat = 60
-    private let pillH: CGFloat = 60
-    private let edgeMargin: CGFloat = 16   // minimum clearance from screen edge
+    private let pillW:         CGFloat = 60
+    private let pillH:         CGFloat = 60
+    private let edgeMargin:    CGFloat = 16
+    /// Movement (pt) beyond which a still touch becomes a drag.
+    private let dragThreshold: CGFloat = 8
+    /// Stillness (s) after which a held touch becomes a hold-to-record.
+    private let holdDelay:     TimeInterval = 0.3
+
+    // MARK: - Pulse
+
+    @State private var _pulseOpacity: Double  = 0.35
+    @State private var _pulseScale:   CGFloat = 1.0
 
     // MARK: - Body
 
     var body: some View {
         GeometryReader { geo in
-            pillContent
-                .frame(width: pillW, height: pillH)
-                // Position is the centre of the pill in the GeometryReader's
-                // coordinate space, offset by the live drag gesture.
-                .position(
-                    x: clampedX(position.x + dragOffset.width,  geo: geo),
-                    y: clampedY(position.y + dragOffset.height, geo: geo)
+            // The gesture lives on this stable ZStack wrapper, NOT on pillContent.
+            // When recording starts, pillContent swaps from idleMicButton to
+            // recordingPillBody — if the gesture were on pillContent, SwiftUI
+            // would destroy and recreate it mid-touch, dropping onEnded entirely
+            // (the root cause of "release doesn't stop recording").
+            // By keeping the gesture on this outer wrapper, which never changes
+            // identity, onEnded always fires no matter what pillContent renders.
+            ZStack {
+                pillContent
+            }
+            .frame(width: pillW, height: pillH)
+            .position(
+                x: clampedX(position.x + dragOffset.width,  geo: geo),
+                y: clampedY(position.y + dragOffset.height, geo: geo)
+            )
+            .opacity(manager.isActive || isDragging ? 1.0 : FloatingPillManager.idleOpacity)
+            .animation(manager.keyboardObserver.swiftUIAnimation,
+                       value: manager.keyboardObserver.isVisible)
+            .animation(.spring(duration: 0.2), value: isDragging)
+            // Gesture on the stable ZStack wrapper — survives pillContent swaps.
+            .gesture(pillGesture(geo: geo))
+            .onChange(of: manager.recordingViewModel?.transcriptionState) { _, state in
+                handleTranscriptionState(state)
+            }
+            .onChange(of: manager.recordingViewModel?.recordingState) { _, state in
+                handleRecordingStateChange(state)
+            }
+            .onAppear {
+                screenSize = geo.size
+                restorePosition(geo: geo)
+            }
+            .onChange(of: geo.size) { _, newSize in
+                screenSize = newSize
+                position = CGPoint(
+                    x: snappedX(position.x, geo: geo),
+                    y: clampedY(position.y, geo: geo)
                 )
-                // Opacity: fully opaque when recording or keyboard visible;
-                // fades to idleOpacity otherwise. Keyboard detection from
-                // manager.keyboardObserver drives this in real-time.
-                .opacity(manager.isActive || isDragging ? 1.0 : FloatingPillManager.idleOpacity)
-                .animation(
-                    manager.keyboardObserver.swiftUIAnimation,
-                    value: manager.keyboardObserver.isVisible
-                )
-                .animation(.spring(duration: 0.2), value: isDragging)
-                .gesture(dragGesture(geo: geo))
-                .onChange(of: manager.recordingViewModel?.transcriptionState) { _, state in
-                    handleTranscriptionState(state)
-                }
-                .onChange(of: manager.recordingViewModel?.recordingState) { _, state in
-                    handleRecordingStateChange(state)
-                }
-                .onAppear {
-                    screenSize = geo.size
-                    restorePosition(geo: geo)
-                }
-                .onChange(of: geo.size) { _, newSize in
-                    screenSize = newSize
-                    // Re-clamp position when the screen rotates.
-                    position = CGPoint(
-                        x: clampedX(position.x, geo: geo),
-                        y: clampedY(position.y, geo: geo)
-                    )
-                }
+            }
+            .onDisappear { cancelHoldTimer() }
         }
-        // Allow the pill to float anywhere in the safe area.
         .ignoresSafeArea(.keyboard)
+    }
+
+    // MARK: - Unified gesture (tap + hold + drag)
+
+    private func pillGesture(geo: GeometryProxy) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                // ── Touch down (first onChanged of this touch) ───────────────
+                if touchStartTime == nil {
+                    touchStartTime = Date()
+                    touchMode      = .undecided
+                    scheduleHoldTimer()
+                }
+
+                let moved = max(abs(value.translation.width),
+                                abs(value.translation.height))
+
+                switch touchMode {
+                case .undecided:
+                    // Movement before the hold timer fires → this is a DRAG.
+                    if moved > dragThreshold {
+                        touchMode = .drag
+                        cancelHoldTimer()          // drag cancels the pending hold
+                        isDragging = true
+                        dragOffset = value.translation
+                    }
+                case .drag:
+                    dragOffset = value.translation
+                case .hold:
+                    break                          // recording; ignore movement
+                }
+            }
+            .onEnded { value in
+                // onEnded ALWAYS fires on finger-up — this is what makes
+                // hold-release reliable.  Capture state, then reset.
+                cancelHoldTimer()
+
+                let moved = max(abs(value.translation.width),
+                                abs(value.translation.height))
+                let mode             = touchMode
+                let didStartRecording = holdStartedRecording
+
+                touchStartTime       = nil
+                touchMode            = .undecided
+                holdStartedRecording = false
+
+                switch mode {
+                case .drag:
+                    finalizeDrag(value: value, geo: geo)
+
+                case .hold:
+                    // Release ends the hold → stop recording.
+                    // Always attempt stop: even if recordingViewModel is not yet
+                    // set (race window between timer firing and startRecording
+                    // completing), we give the manager a chance to stop as soon
+                    // as the VM exists by calling stopRecording() unconditionally.
+                    Task { await manager.stopRecording() }
+
+                case .undecided:
+                    // Finger lifted before the hold timer AND without dragging.
+                    if didStartRecording {
+                        // The hold timer fired and startRecording() was called, but
+                        // the touch ended before we ever left .undecided (race).
+                        // Stop the recording that was just started.
+                        Task { await manager.stopRecording() }
+                    } else if moved <= dragThreshold {
+                        // Clean quick tap — toggle recording.
+                        handleTap()
+                    }
+                }
+            }
+    }
+
+    // MARK: - Hold timer
+
+    /// Schedules promotion of a still touch into hold-to-record after `holdDelay`.
+    /// Cancelled if the finger drags or lifts first.
+    private func scheduleHoldTimer() {
+        holdTask?.cancel()
+        holdTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(holdDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // Only promote to hold if the touch is still undecided (finger down,
+            // no drag started, not lifted).
+            guard touchMode == .undecided else { return }
+            touchMode = .hold
+            // Start recording only if idle — a hold while already recording
+            // simply arms the release-to-stop behaviour.
+            if manager.recordingViewModel == nil {
+                holdStartedRecording = true
+                startRecording()
+            }
+        }
+    }
+
+    private func cancelHoldTimer() {
+        holdTask?.cancel()
+        holdTask = nil
+    }
+
+    // MARK: - Tap handling (toggle)
+
+    private func handleTap() {
+        if let rvm = manager.recordingViewModel {
+            if rvm.isRecording {
+                Task { await manager.stopRecording() }
+            }
+        } else {
+            startRecording()
+        }
+    }
+
+    // MARK: - Drag finalisation
+
+    private func finalizeDrag(value: DragGesture.Value, geo: GeometryProxy) {
+        isDragging = false
+        let dropped = CGPoint(
+            x: position.x + value.translation.width,
+            y: position.y + value.translation.height
+        )
+        // Snap X to the nearest left/right edge; clamp Y within safe bounds.
+        let snapped = CGPoint(
+            x: snappedX(dropped.x, geo: geo),
+            y: clampedY(dropped.y, geo: geo)
+        )
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+            position   = snapped
+            dragOffset = .zero
+        }
+        savePosition(snapped)
     }
 
     // MARK: - Pill content
@@ -132,45 +296,33 @@ struct FloatingPillView: View {
         }
     }
 
-    // MARK: - Idle mic button
-
     private var idleMicButton: some View {
-        Button { startRecording() } label: {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.pillPrimary, .pillPrimaryVariant],
-                            startPoint: .topLeading, endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: pillW, height: pillH)
-                    .shadow(color: Color.pillPrimary.opacity(isDragging ? 0.15 : 0.45),
-                            radius: isDragging ? 4 : 12, x: 0, y: isDragging ? 2 : 6)
+        ZStack {
+            Circle()
+                .fill(LinearGradient(
+                    colors: [.pillPrimary, .pillPrimaryVariant],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
+                .frame(width: pillW, height: pillH)
+                .shadow(color: Color.pillPrimary.opacity(isDragging ? 0.15 : 0.45),
+                        radius: isDragging ? 4 : 12, x: 0, y: isDragging ? 2 : 6)
 
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.18))
-            }
+            Image(systemName: "mic.fill")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.18))
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("Start recording")
-        .accessibilityHint("Tap to record, drag to move")
+        .accessibilityHint("Tap to toggle, hold to record while held, drag to move")
     }
-
-    // MARK: - Recording pill body
 
     @ViewBuilder
     private func recordingPillBody(rvm: RecordingViewModel) -> some View {
         ZStack {
-            // Background capsule — matches RecordingPillView gradient
             Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [.pillPrimary, .pillPrimaryVariant],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                )
+                .fill(LinearGradient(
+                    colors: [.pillPrimary, .pillPrimaryVariant],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
                 .shadow(color: Color.pillPrimary.opacity(0.45), radius: 10, x: 0, y: 5)
 
             if rvm.isTranscribing {
@@ -178,7 +330,6 @@ struct FloatingPillView: View {
                     .tint(.white)
                     .scaleEffect(0.9)
             } else {
-                // Stop icon while recording, mic while ready
                 Image(systemName: rvm.isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(.white)
@@ -186,10 +337,9 @@ struct FloatingPillView: View {
         }
         .frame(width: pillW, height: pillH)
         .overlay(
-            // Pulsing ring while recording
             Circle()
-                .strokeBorder(Color.white.opacity(pulseOpacity(for: rvm)), lineWidth: 2)
-                .scaleEffect(pulseScale(for: rvm))
+                .strokeBorder(Color.white.opacity(_pulseOpacity), lineWidth: 2)
+                .scaleEffect(_pulseScale)
                 .animation(
                     rvm.isRecording
                         ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
@@ -197,57 +347,8 @@ struct FloatingPillView: View {
                     value: rvm.isRecording
                 )
         )
-        .onTapGesture {
-            if rvm.isRecording {
-                Task { await manager.stopRecording() }
-            }
-        }
         .accessibilityLabel(rvm.isRecording ? "Stop recording" : "Transcribing…")
     }
-
-    @State private var _pulseOpacity: Double = 0.35
-    @State private var _pulseScale:   CGFloat = 1.0
-
-    private func pulseOpacity(for rvm: RecordingViewModel) -> Double { _pulseOpacity }
-    private func pulseScale(for rvm: RecordingViewModel)   -> CGFloat { _pulseScale }
-
-    // MARK: - Drag gesture
-
-    private func dragGesture(geo: GeometryProxy) -> some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .local)
-            .onChanged { value in
-                isDragging = true
-                dragOffset = value.translation
-            }
-            .onEnded { value in
-                isDragging = false
-                // Free positioning: keep exactly where the user dropped it.
-                // Clamp only to the safe-area boundary so the pill is never
-                // partially off-screen.  No edge-snapping is applied.
-                let dropped = CGPoint(
-                    x: position.x + value.translation.width,
-                    y: position.y + value.translation.height
-                )
-                let clamped = CGPoint(
-                    x: clampedX(dropped.x, geo: geo),
-                    y: clampedY(dropped.y, geo: geo)
-                )
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                    position = clamped
-                    dragOffset = .zero
-                }
-                // Persist the final position so it survives app restarts.
-                savePosition(clamped)
-            }
-    }
-
-    // MARK: - No edge-snapping (removed per product requirement)
-    //
-    // Edge-snapping root cause: the previous implementation always called
-    // `snapToEdge(_:geo:)` on drag-end, which forcibly moved the pill to
-    // either the left or right screen edge regardless of where the user
-    // released it.  That function has been removed.  Drag-end now clamps
-    // the pill within the safe area and persists the exact dropped position.
 
     // MARK: - Clamping helpers
 
@@ -260,25 +361,37 @@ struct FloatingPillView: View {
         )
     }
 
+    /// Returns the X coordinate snapped to either the left or the right edge,
+    /// whichever the given X is closest to.  This is the horizontal component
+    /// of the Android-style edge-docking behaviour: the pill can only sit on
+    /// the left or the right rail — never in the middle of the screen.
+    private func snappedX(_ x: CGFloat, geo: GeometryProxy) -> CGFloat {
+        let half   = pillW / 2
+        let leftX  = geo.safeAreaInsets.leading  + half + edgeMargin
+        let rightX = geo.size.width - geo.safeAreaInsets.trailing - half - edgeMargin
+        // Snap to whichever edge is nearer.
+        let midScreen = geo.size.width / 2
+        return x < midScreen ? leftX : rightX
+    }
+
+    /// Clamps X to [leftEdge, rightEdge] during live dragging (no snap yet).
+    /// The snap only happens on drag release via `snappedX`.
     private func clampedX(_ x: CGFloat, geo: GeometryProxy) -> CGFloat {
-        let half = pillW / 2
-        let minX = geo.safeAreaInsets.leading  + half + edgeMargin
-        let maxX = geo.size.width - geo.safeAreaInsets.trailing - half - edgeMargin
-        return max(minX, min(maxX, x))
+        let half   = pillW / 2
+        let leftX  = geo.safeAreaInsets.leading  + half + edgeMargin
+        let rightX = geo.size.width - geo.safeAreaInsets.trailing - half - edgeMargin
+        return max(leftX, min(rightX, x))
     }
 
     private func clampedY(_ y: CGFloat, geo: GeometryProxy) -> CGFloat {
         let half = pillH / 2
-        // Keep pill above the keyboard when visible
         let keyboardTop = keyboardObserverTop(geo: geo)
-        let minY = geo.safeAreaInsets.top    + half + edgeMargin
-        let maxY = keyboardTop               - half - edgeMargin
+        let minY = geo.safeAreaInsets.top + half + edgeMargin
+        let maxY = keyboardTop            - half - edgeMargin
         return max(minY, min(maxY, y))
     }
 
     private func keyboardObserverTop(geo: GeometryProxy) -> CGFloat {
-        // If keyboard is showing, its top edge is (screen height - keyboard height).
-        // We keep the pill above it.
         let kbHeight = manager.keyboardObserver.height
         if kbHeight > 0 {
             return geo.size.height - kbHeight
@@ -291,17 +404,18 @@ struct FloatingPillView: View {
     private func restorePosition(geo: GeometryProxy) {
         let px = preferences.floatingPillX
         let py = preferences.floatingPillY
-
         if px == Int.min || py == Int.min {
-            // Default: bottom-right corner snapped to right edge
+            // First launch: default to the right edge, near the bottom.
             let safe = safeArea(geo: geo)
             position = CGPoint(
                 x: safe.maxX - pillW / 2 - edgeMargin,
                 y: safe.maxY - pillH - 48
             )
         } else {
+            // Snap saved X to the nearest edge in case it was stored from an
+            // older build that allowed the pill to sit anywhere horizontally.
             position = CGPoint(
-                x: clampedX(CGFloat(px), geo: geo),
+                x: snappedX(CGFloat(px), geo: geo),
                 y: clampedY(CGFloat(py), geo: geo)
             )
         }
@@ -318,7 +432,6 @@ struct FloatingPillView: View {
         guard let state else { return }
 
         if case .completed(let response) = state {
-            // Fetch the persisted Transcription from the store.
             let transcription: Transcription
             if let store = transcriptionStore,
                let match = try? store.fetch(limit: 200).first(where: { $0.text == response.text }) {
@@ -334,20 +447,12 @@ struct FloatingPillView: View {
                 )
             }
 
-            // insertTranscript: inject into focused field OR copy to clipboard.
             let (toShow, result) = manager.handleTranscriptionComplete(
                 transcription,
                 injectionEnabled: preferences.promptTextInjectionEnabled
             )
-
-            // Report the insertion result so HomeView can show the clipboard toast.
-            if let result {
-                onInsertionResult(result)
-            }
-            // Show the detail sheet only when text was not consumed by injection.
-            if let toShow {
-                onTranscriptReady(toShow)
-            }
+            if let result { onInsertionResult(result) }
+            if let toShow { onTranscriptReady(toShow) }
         }
 
         if case .failed = state {

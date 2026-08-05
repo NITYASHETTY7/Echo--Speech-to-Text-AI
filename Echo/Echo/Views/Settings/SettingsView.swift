@@ -442,6 +442,25 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.green)
         }
+
+        // Helper text — "Get your API key from <url>" (matches Android ApiKeyField helper)
+        // Hidden when the provider has no public signup page (e.g. Custom).
+        if let url = vm.apiKeySignupURL, let host = vm.apiKeySignupHost {
+            HStack(spacing: 4) {
+                Text("Get your API key from")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    UIApplication.shared.open(url)
+                } label: {
+                    Text(host)
+                        .font(.caption)
+                        .foregroundStyle(Color(red: 0.604, green: 0.659, blue: 1.0))
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Open \(host) in browser")
+            }
+        }
     }
 
     // MARK: - Test Connection section (matches Android TestConnectionSection)

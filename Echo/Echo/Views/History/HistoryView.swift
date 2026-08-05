@@ -111,20 +111,38 @@ struct HistoryView: View {
     @ViewBuilder
     private func listContent(vm: HistoryViewModel, items: [Transcription]) -> some View {
         let currentProvider = ProviderId(rawValue: providerSettings.selectedProvider)
+        let groups = vm.groupedTranscriptions
         List {
-            ForEach(items) { transcription in
-                Button { selectedTranscription = transcription } label: {
-                    TranscriptCard(transcription: transcription, providerId: currentProvider)
-                        .padding(.vertical, 4)
+            // Android-matching date sections: Today / Yesterday / Last 7 Days /
+            // Last 30 Days / Older — sorted newest-first within each section.
+            // Section headers use the same style as Android (small, secondary-colored).
+            ForEach(groups) { group in
+                Section {
+                    ForEach(group.items) { transcription in
+                        Button { selectedTranscription = transcription } label: {
+                            TranscriptCard(transcription: transcription, providerId: currentProvider)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color(.systemBackground))
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                vm.delete(id: transcription.id)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                } header: {
+                    Text(group.label)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)          // prevent SwiftUI's automatic uppercasing
+                        .padding(.horizontal, -4)
                 }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                .listRowSeparator(.hidden)
-                // Prevent list row background from showing through on light mode
-                .listRowBackground(Color(.systemBackground))
-            }
-            .onDelete { indexSet in
-                for index in indexSet { vm.delete(id: items[index].id) }
             }
         }
         .listStyle(.plain)

@@ -25,13 +25,80 @@ public final class HistoryViewModel {
     /// Search text bound to the search field; filters transcriptions reactively.
     var searchText: String = ""
 
-    /// Transcriptions matching the current searchText (case-insensitive).
+    /// Transcriptions matching the current searchText (case-insensitive),
+    /// always sorted by creation timestamp DESC (newest first) regardless of
+    /// any updatedAt / sync reordering in the underlying store.
     var filteredTranscriptions: [Transcription] {
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return transcriptions
+        let base: [Transcription]
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            base = transcriptions
+        } else {
+            let query = searchText.lowercased()
+            base = transcriptions.filter { $0.text.lowercased().contains(query) }
         }
-        let query = searchText.lowercased()
-        return transcriptions.filter { $0.text.lowercased().contains(query) }
+        // Always sort strictly by creation timestamp DESC so history always
+        // appears newest-first, independent of updatedAt or sync order.
+        return base.sorted { $0.timestamp > $1.timestamp }
+    }
+
+    // MARK: - Android-matching date groups
+    // MARK: - Exact-date groups
+    //
+    // Each calendar day that has at least one transcription gets its own section.
+    // Sections are ordered newest-day first.
+    // Today → "Today", yesterday → "Yesterday", all older dates → "Aug 3", "Aug 2", …
+    //
+    // Sort key: raw `timestamp` (Int64 epoch-ms creation time), newest first.
+
+    /// A named section used on the History screen.
+    struct TranscriptionGroup: Identifiable {
+        let label: String
+        let items: [Transcription]
+        var id: String { label }
+    }
+
+    /// Transcriptions grouped by exact calendar date, newest section first.
+    /// Today → "Today", yesterday → "Yesterday", all older dates → "Aug 3", "Aug 2", …
+    /// Filtered by the current searchText; items within each section are newest-first.
+    var groupedTranscriptions: [TranscriptionGroup] {
+        let base = filteredTranscriptions   // already search-filtered & sorted DESC
+
+        let cal          = Calendar.current
+        let now          = Date()
+        let startOfToday = cal.startOfDay(for: now)
+        let startOfYest  = cal.date(byAdding: .day, value: -1, to: startOfToday)!
+
+        // Label formatter: "Aug 3", "Jul 29", etc.
+        let labelFormatter = DateFormatter()
+        labelFormatter.dateFormat = "MMM d"
+
+        // Group into ordered buckets keyed by calendar day (startOfDay),
+        // preserving newest-day-first order from the sorted input.
+        var dayOrder: [Date] = []
+        var dayBuckets: [Date: [Transcription]] = [:]
+
+        for t in base {
+            let date     = Date(timeIntervalSince1970: TimeInterval(t.timestamp) / 1_000)
+            let dayStart = cal.startOfDay(for: date)
+            if dayBuckets[dayStart] == nil {
+                dayOrder.append(dayStart)
+                dayBuckets[dayStart] = []
+            }
+            dayBuckets[dayStart]!.append(t)
+        }
+
+        return dayOrder.compactMap { dayStart -> TranscriptionGroup? in
+            guard let items = dayBuckets[dayStart], !items.isEmpty else { return nil }
+            let label: String
+            if cal.isDate(dayStart, inSameDayAs: startOfToday) {
+                label = "Today"
+            } else if cal.isDate(dayStart, inSameDayAs: startOfYest) {
+                label = "Yesterday"
+            } else {
+                label = labelFormatter.string(from: dayStart)
+            }
+            return TranscriptionGroup(label: label, items: items)
+        }
     }
 
     /// Non-nil when a store error should be surfaced.

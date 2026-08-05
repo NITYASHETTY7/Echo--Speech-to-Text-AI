@@ -220,6 +220,35 @@ public final class SettingsViewModel {
         keychainError = nil
     }
 
+    // MARK: - API key signup URL (matches Android provider URL helper text)
+
+    /// Returns the official API signup / dashboard URL for the currently selected
+    /// provider, or nil if the provider has no public signup page (e.g. Custom).
+    /// Used by SettingsView to render the "Get your API key from <url>" helper row.
+    var apiKeySignupURL: URL? {
+        guard let providerId = ProviderId(rawValue: providerSettings.selectedProvider) else {
+            return nil
+        }
+        let urlString: String?
+        switch providerId {
+        case .groq:       urlString = "https://console.groq.com/keys"
+        case .openAI:     urlString = "https://platform.openai.com/api-keys"
+        case .openRouter: urlString = "https://openrouter.ai/keys"
+        case .deepgram:   urlString = "https://console.deepgram.com"
+        case .assemblyAI: urlString = "https://www.assemblyai.com/dashboard"
+        case .gemini:     urlString = "https://aistudio.google.com/apikey"
+        case .azure:      urlString = "https://portal.azure.com"
+        case .custom:     urlString = nil   // no canonical signup page
+        }
+        return urlString.flatMap { URL(string: $0) }
+    }
+
+    /// The display host (e.g. "console.groq.com") for the current provider's
+    /// signup URL, or nil when there is no URL.
+    var apiKeySignupHost: String? {
+        apiKeySignupURL?.host
+    }
+
     // MARK: - Supported models
 
     func supportedModels(for config: ProviderConfig) -> [String] {

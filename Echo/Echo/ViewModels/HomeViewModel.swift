@@ -27,6 +27,60 @@ public final class HomeViewModel {
     /// The most recent transcription (first element of allTranscriptions).
     var latestTranscription: Transcription? { allTranscriptions?.first }
 
+    // MARK: - Date-grouped sections (matches HistoryView / Android MainScreen grouping)
+
+    struct TranscriptionGroup: Identifiable {
+        let label: String
+        let items: [Transcription]
+        var id: String { label }
+    }
+
+    /// `allTranscriptions` grouped by exact calendar date, newest section first.
+    /// Today → "Today", yesterday → "Yesterday", all older dates → "Aug 3", "Aug 2", …
+    var groupedTranscriptions: [TranscriptionGroup] {
+        guard let all = allTranscriptions, !all.isEmpty else { return [] }
+
+        let cal          = Calendar.current
+        let now          = Date()
+        let startOfToday = cal.startOfDay(for: now)
+        let startOfYest  = cal.date(byAdding: .day, value: -1, to: startOfToday)!
+
+        // Label formatter: "Aug 3", "Jul 29", etc.
+        let labelFormatter = DateFormatter()
+        labelFormatter.dateFormat = "MMM d"
+
+        // Sort strictly by creation timestamp DESC so newest items appear first.
+        let sorted = all.sorted { $0.timestamp > $1.timestamp }
+
+        // Group into an ordered dictionary keyed by calendar day (startOfDay).
+        // Using an array of (key, [Transcription]) to preserve newest-day-first order.
+        var dayOrder: [Date] = []
+        var dayBuckets: [Date: [Transcription]] = [:]
+
+        for t in sorted {
+            let date     = Date(timeIntervalSince1970: TimeInterval(t.timestamp) / 1_000)
+            let dayStart = cal.startOfDay(for: date)
+            if dayBuckets[dayStart] == nil {
+                dayOrder.append(dayStart)
+                dayBuckets[dayStart] = []
+            }
+            dayBuckets[dayStart]!.append(t)
+        }
+
+        return dayOrder.compactMap { dayStart -> TranscriptionGroup? in
+            guard let items = dayBuckets[dayStart], !items.isEmpty else { return nil }
+            let label: String
+            if cal.isDate(dayStart, inSameDayAs: startOfToday) {
+                label = "Today"
+            } else if cal.isDate(dayStart, inSameDayAs: startOfYest) {
+                label = "Yesterday"
+            } else {
+                label = labelFormatter.string(from: dayStart)
+            }
+            return TranscriptionGroup(label: label, items: items)
+        }
+    }
+
     /// True when the current provider has a stored API key.
     /// This is stored as a tracked property (not a computed property) so that
     /// @Observable sees changes to it and redraws the ProviderNotConfiguredBanner

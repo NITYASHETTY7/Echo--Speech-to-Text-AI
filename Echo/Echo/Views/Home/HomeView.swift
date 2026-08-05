@@ -61,6 +61,12 @@ struct HomeView: View {
 
     @State private var staticRecordingViewModel: RecordingViewModel?
 
+    /// True when the current static-FAB recording was started by press-and-hold.
+    /// When the finger lifts, recording stops automatically without a second tap.
+    @State private var isFABHoldMode: Bool = false
+    /// Timestamp of when the current FAB touch began; used to detect quick taps.
+    @State private var fabTouchStart: Date? = nil
+
     // MARK: - Clipboard toast
 
     /// Set to true after a transcription is copied to the clipboard instead of
@@ -255,22 +261,81 @@ struct HomeView: View {
     }
 
     private var idleFAB: some View {
-        Button { startStaticRecordingSession() } label: {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(
-                        colors: [.echoPrimary, .echoPrimaryVariant],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 64, height: 64)
-                    .shadow(color: Color.echoPrimary.opacity(0.4), radius: 12, x: 0, y: 6)
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.18))
-            }
+        // Supports two interaction modes that coexist without conflicting:
+        //
+        //  1. Tap mode (existing):   quick tap (< 250 ms, < 10 pt movement)
+        //                            → startStaticRecordingSession()
+        //                            → RecordingPillView shown; user taps Stop.
+        //
+        //  2. Hold mode (new):       touch-down → startStaticRecordingSession() immediately.
+        //                            touch-up   → stopRecording() automatically.
+        //                            No second tap required.
+        //
+        // DragGesture(minimumDistance: 0) is used because it fires .onChanged on
+        // the very first touch contact and .onEnded on lift, giving reliable
+        // touch-down / touch-up events without LongPressGesture timing quirks.
+        //
+        // The static FAB and the RecordingPillView are separate views in the ZStack,
+        // but the gesture is on the idleFAB view which is only visible when
+        // staticRecordingViewModel == nil.  onEnded fires even if the view is
+        // removed mid-gesture (SwiftUI cancels the gesture and delivers onEnded).
+
+        let fabVisual = ZStack {
+            Circle()
+                .fill(LinearGradient(
+                    colors: [.echoPrimary, .echoPrimaryVariant],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
+                .frame(width: 64, height: 64)
+                .shadow(color: Color.echoPrimary.opacity(0.4), radius: 12, x: 0, y: 6)
+            Image(systemName: "mic.fill")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.18))
         }
-        .accessibilityLabel("Start recording")
-        .accessibilityHint("Immediately starts recording from this screen")
+
+        let touchGesture = DragGesture(minimumDistance: 0)
+            .onChanged { _ in
+                guard !isFABHoldMode, staticRecordingViewModel == nil else { return }
+                isFABHoldMode  = true
+                fabTouchStart  = Date()
+                startStaticRecordingSession()
+            }
+            .onEnded { value in
+                guard isFABHoldMode else { return }
+
+                let elapsed    = fabTouchStart.map { Date().timeIntervalSince($0) } ?? 1
+                let moved      = abs(value.translation.width) > 10
+                              || abs(value.translation.height) > 10
+                let isQuickTap = elapsed < 0.25 && !moved
+
+                isFABHoldMode  = false
+                fabTouchStart  = nil
+
+                if isQuickTap {
+                    // Quick tap: leave recording running, user taps Stop.
+                } else {
+                    // Hold released — stop as soon as the recorder is recording.
+                    // startStaticRecordingSession() fires Task { await rvm.startRecording() }
+                    // so the rvm may not be .isRecording yet when onEnded fires.
+                    // We capture rvm here; the Task below waits for it to start.
+                    guard let rvm = staticRecordingViewModel else { return }
+                    Task {
+                        // Wait up to 3 s for the recorder to reach .recording.
+                        let deadline = Date().addingTimeInterval(3.0)
+                        while !rvm.isRecording && Date() < deadline {
+                            try? await Task.sleep(nanoseconds: 30_000_000) // 30 ms
+                        }
+                        if rvm.isRecording {
+                            await rvm.stopRecording()
+                        }
+                    }
+                }
+            }
+
+        return fabVisual
+            .gesture(touchGesture)
+            .accessibilityLabel("Start recording")
+            .accessibilityHint("Tap to toggle recording, or press and hold to record while held")
     }
 
     // MARK: - Floating pill recording session
@@ -295,10 +360,10 @@ struct HomeView: View {
               let store    = transcriptionStore,
               let keychain = keychainStore else { return }
 
-        let recorder  = AudioRecorder()
-        let factory   = ProviderFactory(keychainStore: keychain, providerSettings: providerSettings)
-        let pipeline  = DefaultTranscriptionPipeline(providerFactory: factory)
-        let captured  = authViewModel
+        let recorder = AudioRecorder()
+        let factory  = ProviderFactory(keychainStore: keychain, providerSettings: providerSettings)
+        let pipeline = DefaultTranscriptionPipeline(providerFactory: factory)
+        let captured = authViewModel
         let coordinator = TranscriptionCoordinator(
             pipeline: pipeline,
             preferences: preferences,
@@ -349,22 +414,40 @@ struct HomeView: View {
         .animation(.easeInOut(duration: 0.3), value: vm.isProviderConfigured)
     }
 
-    // MARK: - History list
+    // MARK: - History list (date-grouped)
 
     @ViewBuilder
     private func historySection(vm: HomeViewModel) -> some View {
-        if let transcriptions = vm.allTranscriptions, !transcriptions.isEmpty {
-            LazyVStack(spacing: 10) {
-                ForEach(Array(transcriptions.enumerated()), id: \.element.id) { index, t in
-                    AnimatedTranscriptCardRow(transcription: t, index: index) {
-                        selectedTranscription = t
+        let groups = vm.groupedTranscriptions
+        if groups.isEmpty {
+            historyEmptyState
+        } else {
+            LazyVStack(spacing: 0, pinnedViews: .sectionHeaders) {
+                ForEach(groups) { group in
+                    Section {
+                        ForEach(Array(group.items.enumerated()), id: \.element.id) { index, t in
+                            AnimatedTranscriptCardRow(transcription: t, index: index) {
+                                selectedTranscription = t
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 10)
+                        }
+                    } header: {
+                        HStack {
+                            Text(group.label)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.secondary)
+                                .textCase(nil)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .background(Color(.systemBackground))
                     }
                 }
             }
-            .padding(.horizontal, 16)
             .padding(.top, 8)
-        } else {
-            historyEmptyState
         }
     }
 
