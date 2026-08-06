@@ -3,6 +3,8 @@ package com.echo.dictation.presentation.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.echo.dictation.core.input.SnoozeManager
+import com.echo.dictation.core.input.SnoozeState
 import com.echo.dictation.data.local.AppPreferences
 import com.echo.dictation.speech.provider.GeminiModelResolver
 import com.echo.dictation.speech.provider.ProviderId
@@ -70,6 +72,8 @@ data class SettingsUiState(
     val testState: TestState               = TestState.Idle,
     // ── Floating pill ─────────────────────────────────────────────────────────
     val floatingPillEnabled: Boolean       = true,
+    /** Current snooze state — reflects [SnoozeManager] in real time, including auto-expiry. */
+    val snoozeState: SnoozeState           = SnoozeState.Off,
     // ── General ──────────────────────────────────────────────────────────────
     val language: String                   = "auto",
     val retentionDays: Int                 = 30,
@@ -93,6 +97,7 @@ class SettingsViewModel @Inject constructor(
     private val appPreferences: AppPreferences,
     private val httpClient: OkHttpClient,
     private val geminiModelResolver: GeminiModelResolver,
+    private val snoozeManager: SnoozeManager,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -107,6 +112,15 @@ class SettingsViewModel @Inject constructor(
         val initial = _state.value
         if (initial.selectedProvider == ProviderId.GEMINI && initial.hasStoredKey) {
             loadModelsForProvider(ProviderId.GEMINI, keyStore.getKey(ProviderId.GEMINI) ?: "")
+        }
+
+        // Keep snoozeState in sync with SnoozeManager, including automatic expiry —
+        // the "Snoozed" / "Resumes in …" UI updates live with no extra action needed,
+        // and the whole Snooze section appears/disappears based on this value.
+        viewModelScope.launch {
+            snoozeManager.stateFlow.collect { snoozeState ->
+                _state.value = _state.value.copy(snoozeState = snoozeState)
+            }
         }
     }
 
@@ -130,6 +144,7 @@ class SettingsViewModel @Inject constructor(
             customBaseUrl       = customUrl,
             effectiveBaseUrl    = if (config.requiresCustomBaseUrl) customUrl else config.defaultBaseUrl,
             floatingPillEnabled = appPreferences.floatingPillEnabled,
+            snoozeState         = snoozeManager.stateFlow.value,
             language            = appPreferences.language,
             retentionDays       = appPreferences.retention,
             theme               = appPreferences.theme,
@@ -407,6 +422,26 @@ class SettingsViewModel @Inject constructor(
     fun onFloatingPillToggled(enabled: Boolean) {
         appPreferences.floatingPillEnabled = enabled
         _state.value = _state.value.copy(floatingPillEnabled = enabled)
+    }
+
+    // ── Snooze ────────────────────────────────────────────────────────────────
+    // Note: there is no user-configurable "default duration" — SnoozeManager fixes
+    // it internally to 30 minutes (SnoozeManager.DEFAULT_SNOOZE_DURATION_MS). The
+    // durations below are per-use choices offered in the Snooze bottom sheet only.
+
+    /** Snooze for a fixed duration (15 min / 30 min / 1 hour / 2 hours / custom). */
+    fun onSnoozeDurationSelected(durationMs: Long) {
+        snoozeManager.snoozeFor(durationMs)
+    }
+
+    /** "Until Manually Enabled" — persists Long.MAX_VALUE, cleared only by ending the snooze. */
+    fun onSnoozeIndefinitelySelected() {
+        snoozeManager.snoozeIndefinitely()
+    }
+
+    /** "End Snooze Now" — clears the snooze immediately, restoring normal Floating Pill behaviour. */
+    fun onEndSnoozeNowClicked() {
+        snoozeManager.resumeNow()
     }
 
     // ── General settings ──────────────────────────────────────────────────────

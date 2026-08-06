@@ -3,7 +3,6 @@ package com.echo.dictation.service.overlay
 import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.res.Configuration
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -47,13 +46,19 @@ class PillWindowManager @Inject constructor(
 ) {
     private var manager: WindowManager? = null
     private var view: FrameLayout? = null
-    private var micIcon: ImageView? = null
+    private var pillIcon: ImageView? = null
+    private var processingRing: ImageView? = null
     private var pillBackground: GradientDrawable? = null
     private var stateScope: CoroutineScope? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var overlayContext: Context? = null
     private var callbacksContext: Context? = null
     private var lastRecordingState: Boolean? = null
+
+    /** Infinite "breathing" pulse used while recording. */
+    private var pulseAnimator: android.animation.ObjectAnimator? = null
+    /** Infinite rotation of [processingRing] used while transcribing. */
+    private var spinAnimator: android.animation.ObjectAnimator? = null
 
     // True when the overlay is supposed to be shown (focus + injection available).
     private var shouldBeVisible = false
@@ -108,27 +113,54 @@ class PillWindowManager @Inject constructor(
         snapToEdge(appContext, params, pillSize)
         windowParams = params
 
+        // Content area available to the icon = pill size minus the FrameLayout's own
+        // padding on both sides. Sizing the icon relative to this (not the raw pillSize)
+        // is what makes it actually occupy ~85–90% of the *visible* button area.
+        val pillPadding = context.dp(PILL_PADDING_DP)
+        val contentArea = pillSize - (pillPadding * 2)
+
         val icon = ImageView(context).apply {
-            setImageResource(R.drawable.ic_microphone)
-            setColorFilter(Color.WHITE)
+            setImageResource(R.drawable.ic_echo_mic_wave)
+            // No tint / color filter — the glyph is already pure white; it reads on the
+            // colour-changing gradient background (lavender / red / amber per state).
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
             layoutParams = FrameLayout.LayoutParams(
-                context.dp(24),
-                context.dp(24),
+                (contentArea * ICON_SIZE_RATIO).toInt(),
+                (contentArea * ICON_SIZE_RATIO).toInt(),
                 Gravity.CENTER
             )
         }
-        micIcon = icon
+        pillIcon = icon
 
-        val bgDrawable = GradientDrawable().apply {
-            setColor(Color.BLACK)
-            cornerRadius = context.dp(28).toFloat()
+        // Processing spinner — a rotating arc "halo" shown only while transcribing.
+        // Sized to the full content area so it rings just outside the glyph. Starts GONE;
+        // applyPillState() shows + rotates it during PillState.Transcribing only.
+        val ring = ImageView(context).apply {
+            setImageResource(R.drawable.ic_processing_ring)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = FrameLayout.LayoutParams(contentArea, contentArea, Gravity.CENTER)
+            visibility = View.GONE
+        }
+        processingRing = ring
+
+        // Idle state: soft lavender → violet gradient (the new Echo identity).
+        // Recording/transcribing temporarily override this with a solid color via
+        // setColor(), then applyPillState() restores the gradient via setColors().
+        val bgDrawable = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(IDLE_GRADIENT_START, IDLE_GRADIENT_CENTER, IDLE_GRADIENT_END)
+        ).apply {
+            gradientType = GradientDrawable.LINEAR_GRADIENT
+            cornerRadius = context.dp(20).toFloat()
         }
         pillBackground = bgDrawable
 
         val pill = FrameLayout(context).apply {
-            setPadding(context.dp(16), context.dp(16), context.dp(16), context.dp(16))
+            setPadding(pillPadding, pillPadding, pillPadding, pillPadding)
             background = bgDrawable
             layoutParams = FrameLayout.LayoutParams(pillSize, pillSize)
+            addView(ring)
             addView(icon)
             contentDescription = "Floating transcription pill"
             alpha = 1f
@@ -155,7 +187,8 @@ class PillWindowManager @Inject constructor(
             manager = null
             windowParams = null
             overlayContext = null
-            micIcon = null
+            pillIcon = null
+            processingRing = null
             pillBackground = null
             return false
         }
@@ -221,6 +254,11 @@ class PillWindowManager @Inject constructor(
     }
 
     fun remove() {
+        longPressHandler.removeCallbacks(longPressRunnable)
+        pulseAnimator?.cancel()
+        pulseAnimator = null
+        spinAnimator?.cancel()
+        spinAnimator = null
         stateScope?.cancel()
         stateScope = null
         callbacksContext?.unregisterComponentCallbacks(componentCallbacks)
@@ -237,7 +275,8 @@ class PillWindowManager @Inject constructor(
         manager = null
         windowParams = null
         overlayContext = null
-        micIcon = null
+        pillIcon = null
+        processingRing = null
         pillBackground = null
         lastRecordingState = null
         shouldBeVisible = false
@@ -248,12 +287,18 @@ class PillWindowManager @Inject constructor(
     /**
      * State machine:
      *
-     *   ACTION_DOWN  → record raw start position; mark isDragging = false
-     *   ACTION_MOVE  → if displacement > [TAP_SLOP_DP] set isDragging = true and
-     *                  reposition the window in real time (60 FPS)
-     *   ACTION_UP    → if isDragging: snap to nearest edge, persist position
+     *   ACTION_DOWN  → record raw start position; mark isDragging = false;
+     *                  schedule a long-press callback after [LONG_PRESS_TIMEOUT_MS]
+     *   ACTION_MOVE  → if displacement > [TAP_SLOP_DP] set isDragging = true, cancel the
+     *                  long-press callback, and reposition the window in real time (60 FPS)
+     *   ACTION_UP    → cancel any pending long-press callback;
+     *                  if isDragging: snap to nearest edge, persist position
      *                  if tap:        delegate to performClick() → toggleState()
-     *   ACTION_CANCEL→ if isDragging: snap and persist; recording untouched
+     *   ACTION_CANCEL→ cancel any pending long-press callback;
+     *                  if isDragging: snap and persist; recording untouched
+     *
+     * Long-press (held in place past [LONG_PRESS_TIMEOUT_MS] without dragging) opens
+     * the Snooze bottom sheet via [SnoozeActivity] instead of toggling recording.
      */
     private fun buildTouchListener(
         pill: FrameLayout,
@@ -271,6 +316,16 @@ class PillWindowManager @Inject constructor(
                 touchState.startX   = params.x
                 touchState.startY   = params.y
                 touchState.isDragging = false
+                touchState.longPressTriggered = false
+                longPressHandler.removeCallbacks(longPressRunnable)
+                longPressRunnable = Runnable {
+                    if (!touchState.isDragging) {
+                        touchState.longPressTriggered = true
+                        Log.d(TAG, "Long-press detected → opening Snooze sheet")
+                        launchSnoozeActivity(appContext)
+                    }
+                }
+                longPressHandler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS)
                 true
             }
 
@@ -284,6 +339,7 @@ class PillWindowManager @Inject constructor(
                     )
                     if (distanceDp > TAP_SLOP_DP) {
                         touchState.isDragging = true
+                        longPressHandler.removeCallbacks(longPressRunnable)
                         Log.d(TAG, "Drag started (${distanceDp.toInt()}dp)")
                     }
                 }
@@ -297,6 +353,13 @@ class PillWindowManager @Inject constructor(
             }
 
             MotionEvent.ACTION_UP -> {
+                longPressHandler.removeCallbacks(longPressRunnable)
+                if (touchState.longPressTriggered) {
+                    // Long-press already handled the gesture — do not also toggle recording.
+                    touchState.isDragging = false
+                    touchState.longPressTriggered = false
+                    return@OnTouchListener true
+                }
                 if (touchState.isDragging) {
                     // Snap to the nearest horizontal edge.
                     snapToEdge(appContext, params, pillSize)
@@ -313,6 +376,8 @@ class PillWindowManager @Inject constructor(
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                longPressHandler.removeCallbacks(longPressRunnable)
+                touchState.longPressTriggered = false
                 if (touchState.isDragging) {
                     // System interrupted drag (e.g. notification shade). Snap and save.
                     snapToEdge(appContext, params, pillSize)
@@ -328,6 +393,19 @@ class PillWindowManager @Inject constructor(
         }
     }
 
+    /**
+     * Launches [com.echo.dictation.presentation.ui.SnoozeActivity] as a translucent,
+     * task-affinity-less trampoline so the Snooze bottom sheet appears over whatever
+     * app is currently in the foreground. FLAG_ACTIVITY_NEW_TASK is required because
+     * the overlay view's context is not itself an Activity context.
+     */
+    private fun launchSnoozeActivity(context: Context) {
+        val intent = android.content.Intent(context, com.echo.dictation.presentation.ui.SnoozeActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }
+            .onFailure { e -> Log.e(TAG, "Failed to launch SnoozeActivity: ${e.message}", e) }
+    }
+
     // Single object to avoid repeated local-variable allocation inside the touch listener.
     private val touchState = object {
         var downRawX  = 0f
@@ -335,7 +413,11 @@ class PillWindowManager @Inject constructor(
         var startX    = 0
         var startY    = 0
         var isDragging = false
+        var longPressTriggered = false
     }
+
+    private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var longPressRunnable: Runnable = Runnable {}
 
     // ─── Position helpers ────────────────────────────────────────────────────
 
@@ -411,21 +493,80 @@ class PillWindowManager @Inject constructor(
         val bgColor = when {
             isRecording    -> RECORDING_COLOR
             isTranscribing -> TRANSCRIBING_COLOR
-            else           -> Color.BLACK
+            else           -> null // idle → restore the lavender gradient below
         }
-        pillBackground?.setColor(bgColor)
+        if (bgColor != null) {
+            pillBackground?.setColor(bgColor)
+        } else {
+            pillBackground?.setColors(intArrayOf(IDLE_GRADIENT_START, IDLE_GRADIENT_CENTER, IDLE_GRADIENT_END))
+        }
 
-        micIcon?.setImageResource(
-            if (isRecording) R.drawable.ic_stop else R.drawable.ic_microphone
-        )
+        // Icon is a static image (Echo glyph). Recording vs. Transcribing are made
+        // unmistakable by giving each state its own motion (not just a color swap):
+        //   • Recording    → deep-red background + a continuous "breathing" pulse.
+        //   • Transcribing → amber background + a rotating spinner ring (halo) around the glyph.
+        //   • Idle         → lavender gradient, no motion, resting scale.
+        stopStateAnimations(currentView)
+        when {
+            isRecording -> {
+                processingRing?.visibility = View.GONE
+                startRecordingPulse(currentView)
+            }
+            isTranscribing -> {
+                currentView.scaleX = RECORDING_SCALE
+                currentView.scaleY = RECORDING_SCALE
+                processingRing?.let { ring ->
+                    ring.visibility = View.VISIBLE
+                    startProcessingSpin(ring)
+                }
+            }
+            else -> {
+                processingRing?.visibility = View.GONE
+                currentView.animate()
+                    .scaleX(NORMAL_SCALE)
+                    .scaleY(NORMAL_SCALE)
+                    .setDuration(SCALE_ANIMATION_DURATION_MS)
+                    .start()
+            }
+        }
+    }
 
+    /** Cancels any running recording-pulse / transcribing-spin animations and resets transforms. */
+    private fun stopStateAnimations(currentView: View) {
         currentView.animate().cancel()
-        val targetScale = if (isRecording || isTranscribing) RECORDING_SCALE else NORMAL_SCALE
-        currentView.animate()
-            .scaleX(targetScale)
-            .scaleY(targetScale)
-            .setDuration(SCALE_ANIMATION_DURATION_MS)
-            .start()
+        pulseAnimator?.cancel()
+        pulseAnimator = null
+        spinAnimator?.cancel()
+        spinAnimator = null
+        processingRing?.rotation = 0f
+    }
+
+    /** Continuous gentle scale pulse — signals "live, capturing audio". */
+    private fun startRecordingPulse(currentView: View) {
+        val scaleX = android.animation.PropertyValuesHolder.ofFloat(
+            View.SCALE_X, RECORDING_PULSE_MIN, RECORDING_PULSE_MAX
+        )
+        val scaleY = android.animation.PropertyValuesHolder.ofFloat(
+            View.SCALE_Y, RECORDING_PULSE_MIN, RECORDING_PULSE_MAX
+        )
+        pulseAnimator = android.animation.ObjectAnimator.ofPropertyValuesHolder(currentView, scaleX, scaleY).apply {
+            duration = RECORDING_PULSE_DURATION_MS
+            repeatCount = android.animation.ObjectAnimator.INFINITE
+            repeatMode = android.animation.ObjectAnimator.REVERSE
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            start()
+        }
+    }
+
+    /** Continuous rotation of the arc ring — signals "processing / transcribing". */
+    private fun startProcessingSpin(ring: ImageView) {
+        spinAnimator = android.animation.ObjectAnimator.ofFloat(ring, View.ROTATION, 0f, 360f).apply {
+            duration = PROCESSING_SPIN_DURATION_MS
+            repeatCount = android.animation.ObjectAnimator.INFINITE
+            repeatMode = android.animation.ObjectAnimator.RESTART
+            interpolator = android.view.animation.LinearInterpolator()
+            start()
+        }
     }
 
     // ─── Utilities ────────────────────────────────────────────────────────────
@@ -444,9 +585,21 @@ class PillWindowManager @Inject constructor(
         private const val PILL_SIZE_DP  = 56
         private const val DEFAULT_Y_DP  = 160
         private const val EDGE_MARGIN_DP = 16
+        private const val PILL_PADDING_DP = 16
+
+        /** Icon occupies this fraction of the pill's content area (85–90% target). */
+        private const val ICON_SIZE_RATIO = 0.87f
+
+        /** Echo's original idle-state identity gradient — teal, per user spec. */
+        private const val IDLE_GRADIENT_START  = 0xFF009999.toInt()
+        private const val IDLE_GRADIENT_CENTER = 0xFF008888.toInt()
+        private const val IDLE_GRADIENT_END    = 0xFF007979.toInt()
 
         /** Any finger movement beyond this dp threshold during a touch is classified as a drag. */
         private const val TAP_SLOP_DP = 10f
+
+        /** Holding the pill in place (no drag) for this long opens the Snooze bottom sheet. */
+        private const val LONG_PRESS_TIMEOUT_MS = 500L
 
         private const val UNSET_POSITION = Int.MIN_VALUE
 
@@ -457,5 +610,13 @@ class PillWindowManager @Inject constructor(
         private const val NORMAL_SCALE              = 1f
         private const val SCALE_ANIMATION_DURATION_MS   = 120L
         private const val VISIBILITY_ANIMATION_DURATION_MS = 200L
+
+        /** Recording "breathing" pulse bounds + speed. */
+        private const val RECORDING_PULSE_MIN = 1.02f
+        private const val RECORDING_PULSE_MAX = 1.18f
+        private const val RECORDING_PULSE_DURATION_MS = 650L
+
+        /** Transcribing spinner: one full rotation per this many ms. */
+        private const val PROCESSING_SPIN_DURATION_MS = 900L
     }
 }

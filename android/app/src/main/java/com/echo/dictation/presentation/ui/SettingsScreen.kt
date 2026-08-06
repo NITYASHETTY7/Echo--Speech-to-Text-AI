@@ -44,6 +44,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -281,8 +283,8 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(8.dp))
 
-                // ── Floating Pill section ─────────────────────────────────────
-                SectionHeader("Floating Pill")
+                // ── Floating Assistant section ────────────────────────────────
+                SectionHeader("Floating Assistant")
 
                 SettingsCard {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -293,12 +295,12 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text  = "Floating Microphone",
+                                    text  = "Enable Floating Assistant",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    text  = "Show the floating mic button over other apps when a text field is focused.",
+                                    text  = "Show the floating assistant over other apps when a text field is focused.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = OnSurfaceVariant,
                                     modifier = Modifier.alpha(0.8f),
@@ -353,6 +355,91 @@ fun SettingsScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.error,
                                 )
+                            }
+                        }
+
+                        // ── Snooze section ────────────────────────────────────
+                        // Appears ONLY while the assistant is actually snoozed. Nothing is
+                        // shown here otherwise — no duration picker, no disabled controls,
+                        // no description. Disappears automatically the instant snoozeState
+                        // returns to Off, whether via natural expiry or "End Snooze Now".
+                        val snoozeState = state.snoozeState
+                        if (snoozeState != com.echo.dictation.core.input.SnoozeState.Off) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 4.dp),
+                                color = OutlineColor.copy(alpha = 0.4f),
+                            )
+
+                            Text(
+                                text  = "Snooze",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text  = "Status",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = OnSurfaceVariant,
+                                )
+                                Text(
+                                    text  = "Snoozed",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+
+                            // Live remaining-time countdown — ticks every second while a
+                            // finite snooze is active. For an indefinite snooze there is no
+                            // countdown to show ("Remaining" is omitted, only Status applies).
+                            if (snoozeState is com.echo.dictation.core.input.SnoozeState.Until) {
+                                var remainingMs by remember(snoozeState.until) {
+                                    mutableStateOf(snoozeState.until - System.currentTimeMillis())
+                                }
+                                LaunchedEffect(snoozeState.until) {
+                                    while (true) {
+                                        remainingMs = snoozeState.until - System.currentTimeMillis()
+                                        if (remainingMs <= 0L) break
+                                        kotlinx.coroutines.delay(1_000L)
+                                    }
+                                }
+                                if (remainingMs > 0L) {
+                                    val totalMinutes = (remainingMs / 60_000L).coerceAtLeast(0L)
+                                    val remainingLabel = if (totalMinutes >= 1L) {
+                                        "$totalMinutes minute${if (totalMinutes == 1L) "" else "s"}"
+                                    } else {
+                                        "less than a minute"
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text(
+                                            text  = "Remaining",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = OnSurfaceVariant,
+                                        )
+                                        Text(
+                                            text  = remainingLabel,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Primary,
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            Button(
+                                onClick  = { viewModel.onEndSnoozeNowClicked() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors   = ButtonDefaults.buttonColors(containerColor = Primary),
+                            ) {
+                                Text("End Snooze Now")
                             }
                         }
                     }

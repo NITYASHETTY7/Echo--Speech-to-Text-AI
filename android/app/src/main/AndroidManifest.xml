@@ -37,6 +37,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".presentation.ui.SnoozeActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Echo.Transparent"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTop" />
         <service
             android:name=".service.overlay.PillOverlayService"
             android:exported="false"

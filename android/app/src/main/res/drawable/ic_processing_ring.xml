@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Indeterminate "processing" ring for the floating assistant's Transcribing state.
+    A 270° white arc (with a gap) that PillWindowManager rotates continuously, forming
+    a clear spinner halo around the Echo glyph so "transcribing / working" is instantly
+    distinguishable from the steady-pulse "recording" state.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M24,4 A20,20 0 1 1 4,24" />
+</vector>

@@ -113,5 +113,33 @@ class AppPreferences @Inject constructor(@ApplicationContext context: Context) {
     var outputLanguage: String
         get() = p.getString("ai_output_language", "English") ?: "English"
         set(v) { p.edit().putString("ai_output_language", v).apply() }
+
+    /**
+     * Floating Pill snooze expiry timestamp (epoch millis).
+     *
+     * - `0L` (default)       → not snoozed, pill behaves normally.
+     * - `Long.MAX_VALUE`     → snoozed indefinitely ("Until Manually Enabled").
+     * - any other value `t` → snoozed until `t`; once `System.currentTimeMillis() >= t`
+     *                          the snooze is considered expired and the pill resumes.
+     *
+     * Stored in plain [android.content.SharedPreferences] (same store as every other
+     * setting here) so it survives app process death, app restarts, and device reboots
+     * without any extra persistence work. Backed by a [MutableStateFlow] so every
+     * observer (SnoozeManager, FocusAndKeyboardDetector, SettingsViewModel) reacts
+     * immediately — no polling required when the value changes from within the app.
+     */
+    private val _snoozeUntilFlow = MutableStateFlow(p.getLong("floating_pill_snooze_until", 0L))
+    val snoozeUntilFlow: StateFlow<Long> = _snoozeUntilFlow.asStateFlow()
+
+    var snoozeUntil: Long
+        get() = _snoozeUntilFlow.value
+        set(v) {
+            p.edit().putLong("floating_pill_snooze_until", v).apply()
+            _snoozeUntilFlow.value = v
+        }
+
+    // Note: the default snooze duration is intentionally NOT user-configurable.
+    // It is a fixed internal constant — see SnoozeManager.DEFAULT_SNOOZE_DURATION_MS.
+    // No SharedPreferences key exists for it and no UI exposes it, per product spec.
 }
 

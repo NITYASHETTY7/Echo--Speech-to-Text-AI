@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Echo's original floating-assistant glyph: an asymmetric waveform (5 rounded bars,
+    center bar tallest, tapering symmetrically outward) reading "live speech / audio
+    activity". No microphone, no speech bubble, no document shape — intentionally
+    distinct from WhisperFlow's mic-in-squircle mark.
+
+    Designed on a 48x48 viewport so it reads cleanly at 32–64dp. Bar extremes span
+    y=3.8–44.2 and x=4.6–45.4, leaving a small margin against the pill's own padding
+    so the glyph fills ~85–90% of the icon area without touching the edges.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+
+    <!-- Waveform bars — center bar tallest, tapering symmetrically outward. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9,20 L9,28 A2.2,2.2 0 0 1 6.8,30.2 A2.2,2.2 0 0 1 4.6,28 L4.6,20 A2.2,2.2 0 0 1 6.8,17.8 A2.2,2.2 0 0 1 9,20 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M18.2,13 L18.2,35 A2.2,2.2 0 0 1 16,37.2 A2.2,2.2 0 0 1 13.8,35 L13.8,13 A2.2,2.2 0 0 1 16,10.8 A2.2,2.2 0 0 1 18.2,13 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M27.4,6 L27.4,42 A2.2,2.2 0 0 1 25.2,44.2 A2.2,2.2 0 0 1 23,42 L23,6 A2.2,2.2 0 0 1 25.2,3.8 A2.2,2.2 0 0 1 27.4,6 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M36.6,13 L36.6,35 A2.2,2.2 0 0 1 34.4,37.2 A2.2,2.2 0 0 1 32.2,35 L32.2,13 A2.2,2.2 0 0 1 34.4,10.8 A2.2,2.2 0 0 1 36.6,13 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M45.4,20 L45.4,28 A2.2,2.2 0 0 1 43.2,30.2 A2.2,2.2 0 0 1 41,28 L41,20 A2.2,2.2 0 0 1 43.2,17.8 A2.2,2.2 0 0 1 45.4,20 Z" />
+</vector>
