@@ -49,6 +49,26 @@ private extension Color {
     static let pillPrimaryVariant = Color(red: 0.486, green: 0.549, blue: 1.0)  // #7C8CFF
 }
 
+// MARK: - EchoIllustrationImage
+
+/// Renders the Echo brand illustration from the main bundle asset catalog.
+/// Pure SwiftUI — no UIKit bridge — so the image lookup always resolves
+/// against the correct bundle regardless of debug-dylib vs release config.
+/// Shared by FloatingPillView (overlay pill) and HomeView (static FAB).
+struct EchoIllustrationImage: View {
+    let size: CGFloat
+
+    var body: some View {
+        Image("EchoIllustration", bundle: .main)
+            .resizable()
+            .renderingMode(.original)
+            .interpolation(.high)
+            .antialiased(true)
+            .scaledToFit()
+            .frame(width: size, height: size)
+    }
+}
+
 // MARK: - FloatingPillView
 
 struct FloatingPillView: View {
@@ -307,9 +327,11 @@ struct FloatingPillView: View {
                 .shadow(color: Color.pillPrimary.opacity(isDragging ? 0.15 : 0.45),
                         radius: isDragging ? 4 : 12, x: 0, y: isDragging ? 2 : 6)
 
-            Image(systemName: "mic.fill")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.18))
+            // Custom Echo illustration — rendered at original colours (no tint).
+            // Uses Bundle.main explicitly so the asset lookup works in both
+            // debug dylib and release configurations.
+            // Falls back to mic.fill if the asset is absent.
+            EchoIllustrationImage(size: pillW - 16)
         }
         .accessibilityLabel("Start recording")
         .accessibilityHint("Tap to toggle, hold to record while held, drag to move")
@@ -329,10 +351,15 @@ struct FloatingPillView: View {
                 ProgressView()
                     .tint(.white)
                     .scaleEffect(0.9)
-            } else {
-                Image(systemName: rvm.isRecording ? "stop.fill" : "mic.fill")
+            } else if rvm.isRecording {
+                // Active recording: keep the stop-recording indicator.
+                Image(systemName: "stop.fill")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(.white)
+            } else {
+                // Idle inside the recording body — show custom illustration with
+                // mic.fill fallback if the asset is unavailable.
+                EchoIllustrationImage(size: pillW - 16)
             }
         }
         .frame(width: pillW, height: pillH)

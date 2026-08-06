@@ -288,9 +288,7 @@ struct HomeView: View {
                 ))
                 .frame(width: 64, height: 64)
                 .shadow(color: Color.echoPrimary.opacity(0.4), radius: 12, x: 0, y: 6)
-            Image(systemName: "mic.fill")
-                .font(.system(size: 26, weight: .semibold))
-                .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.18))
+            EchoIllustrationImage(size: 48)
         }
 
         let touchGesture = DragGesture(minimumDistance: 0)
