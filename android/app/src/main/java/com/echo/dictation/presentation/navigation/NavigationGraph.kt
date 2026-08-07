@@ -14,7 +14,7 @@ import com.echo.dictation.presentation.ui.MainScreen
 import com.echo.dictation.presentation.ui.SettingsScreen
 import com.echo.dictation.presentation.ui.auth.AuthUiState
 import com.echo.dictation.presentation.ui.auth.AuthViewModel
-import com.echo.dictation.presentation.ui.auth.WelcomeOnboardingScreen
+import com.echo.dictation.presentation.ui.onboarding.OnboardingScreen
 
 object Routes {
     const val ONBOARDING = "onboarding"
@@ -24,12 +24,6 @@ object Routes {
 
 @Composable
 fun NavigationGraph(navController: NavHostController, prefs: AppPreferences) {
-    // startDestination is computed once from the Hilt-managed singleton.
-    // Do NOT call AppPreferences(context) here — that creates a second instance
-    // outside the DI graph. Under R8 constructor optimizations (release build),
-    // the manually-constructed instance may not see the correct SharedPreferences
-    // state, causing onboardingCompleted to return false even when already set,
-    // which pushes an extra blank MAIN destination onto the back stack.
     val startDest = if (prefs.onboardingCompleted) Routes.MAIN else Routes.ONBOARDING
 
     NavHost(navController, startDestination = startDest) {
@@ -38,7 +32,7 @@ fun NavigationGraph(navController: NavHostController, prefs: AppPreferences) {
             val authViewModel: AuthViewModel = hiltViewModel()
             val uiState by authViewModel.uiState.collectAsStateWithLifecycle()
 
-            // Navigate to MAIN only after successful Firebase authentication
+            // Navigate to MAIN after successful Firebase authentication
             LaunchedEffect(uiState) {
                 if (uiState is AuthUiState.Authenticated) {
                     prefs.onboardingCompleted = true
@@ -49,17 +43,23 @@ fun NavigationGraph(navController: NavHostController, prefs: AppPreferences) {
                 }
             }
 
-            WelcomeOnboardingScreen(
-                uiState = uiState,
-                onGoogleSignInClick = {
-                    authViewModel.signInWithGoogle(context)
-                },
-                onSkipClick = {
+            OnboardingScreen(
+                onGetStarted = {
                     prefs.onboardingCompleted = true
                     navController.navigate(Routes.MAIN) {
                         popUpTo(Routes.ONBOARDING) { inclusive = true }
                         launchSingleTop = true
                     }
+                },
+                onSkip = {
+                    prefs.onboardingCompleted = true
+                    navController.navigate(Routes.MAIN) {
+                        popUpTo(Routes.ONBOARDING) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onSignIn = {
+                    authViewModel.signInWithGoogle(context)
                 },
             )
         }
@@ -74,7 +74,12 @@ fun NavigationGraph(navController: NavHostController, prefs: AppPreferences) {
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onReplayOnboarding = {
+                    navController.navigate(Routes.ONBOARDING) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
     }

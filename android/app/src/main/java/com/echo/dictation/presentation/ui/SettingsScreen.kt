@@ -103,6 +103,7 @@ import com.echo.dictation.service.overlay.PillOverlayService
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onReplayOnboarding: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
     aiViewModel: AIViewModel = hiltViewModel(),
     authViewModel: AuthViewModel = hiltViewModel(),
@@ -502,6 +503,31 @@ fun SettingsScreen(
                         displayName  = { t -> themes.firstOrNull { it.first == t }?.second ?: t },
                         onSelect     = { viewModel.onThemeChanged(it) },
                     )
+                }
+
+                // Replay Onboarding
+                SettingsCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            SettingsLabel("Onboarding")
+                            Text(
+                                text = "View the introduction again",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = onReplayOnboarding) {
+                            Text(
+                                text = "Replay",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Primary,
+                            )
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(32.dp))
