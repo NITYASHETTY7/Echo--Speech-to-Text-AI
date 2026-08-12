@@ -26,8 +26,10 @@ import EchoCore
 // MARK: - Color tokens
 
 private extension Color {
-    static let echoPrimary          = Color(red: 0.604, green: 0.659, blue: 1.0)
-    static let echoPrimaryVariant   = Color(red: 0.486, green: 0.549, blue: 1.0)
+    /// Idle nude rose #E1C4BD
+    static let echoPrimary          = Color(red: 0.882, green: 0.769, blue: 0.741)
+    /// Idle nude darker variant #C9A49C
+    static let echoPrimaryVariant   = Color(red: 0.788, green: 0.643, blue: 0.612)
     static let echoOnSurfaceVariant = Color(red: 0.620, green: 0.620, blue: 0.682)
 }
 
@@ -281,14 +283,14 @@ struct HomeView: View {
         // removed mid-gesture (SwiftUI cancels the gesture and delivers onEnded).
 
         let fabVisual = ZStack {
-            Circle()
+            RoundedRectangle(cornerRadius: 18)
                 .fill(LinearGradient(
                     colors: [.echoPrimary, .echoPrimaryVariant],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 ))
                 .frame(width: 64, height: 64)
                 .shadow(color: Color.echoPrimary.opacity(0.4), radius: 12, x: 0, y: 6)
-            EchoIllustrationImage(size: 48)
+            EchoMicWaveIcon(size: 44, color: Color(red: 0.42, green: 0.33, blue: 0.31))
         }
 
         let touchGesture = DragGesture(minimumDistance: 0)

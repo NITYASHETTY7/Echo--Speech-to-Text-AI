@@ -45,8 +45,14 @@ import EchoCore
 // MARK: - Color tokens
 
 private extension Color {
-    static let pillPrimary        = Color(red: 0.604, green: 0.659, blue: 1.0)  // #9AA8FF
-    static let pillPrimaryVariant = Color(red: 0.486, green: 0.549, blue: 1.0)  // #7C8CFF
+    /// Idle nude rose #E1C4BD
+    static let pillPrimary        = Color(red: 0.882, green: 0.769, blue: 0.741)
+    /// Idle nude darker variant #C9A49C
+    static let pillPrimaryVariant = Color(red: 0.788, green: 0.643, blue: 0.612)
+    /// Recording deep-red  — Android RECORDING_COLOR  #C62828
+    static let pillRecording      = Color(red: 0.776, green: 0.157, blue: 0.157)
+    /// Transcribing deep-amber — Android TRANSCRIBING_COLOR #E65100
+    static let pillTranscribing   = Color(red: 0.902, green: 0.318, blue: 0.0)
 }
 
 // MARK: - EchoIllustrationImage
@@ -318,7 +324,7 @@ struct FloatingPillView: View {
 
     private var idleMicButton: some View {
         ZStack {
-            Circle()
+            RoundedRectangle(cornerRadius: 18)
                 .fill(LinearGradient(
                     colors: [.pillPrimary, .pillPrimaryVariant],
                     startPoint: .topLeading, endPoint: .bottomTrailing
@@ -327,11 +333,9 @@ struct FloatingPillView: View {
                 .shadow(color: Color.pillPrimary.opacity(isDragging ? 0.15 : 0.45),
                         radius: isDragging ? 4 : 12, x: 0, y: isDragging ? 2 : 6)
 
-            // Custom Echo illustration — rendered at original colours (no tint).
-            // Uses Bundle.main explicitly so the asset lookup works in both
-            // debug dylib and release configurations.
-            // Falls back to mic.fill if the asset is absent.
-            EchoIllustrationImage(size: pillW - 16)
+            // Dark taupe icon — readable on light nude background
+            EchoMicWaveIcon(size: pillW - 16,
+                            color: Color(red: 0.42, green: 0.33, blue: 0.31))
         }
         .accessibilityLabel("Start recording")
         .accessibilityHint("Tap to toggle, hold to record while held, drag to move")
@@ -340,31 +344,41 @@ struct FloatingPillView: View {
     @ViewBuilder
     private func recordingPillBody(rvm: RecordingViewModel) -> some View {
         ZStack {
-            Circle()
+            RoundedRectangle(cornerRadius: 18)
                 .fill(LinearGradient(
-                    colors: [.pillPrimary, .pillPrimaryVariant],
+                    // Recording → deep red; transcribing → deep amber; otherwise teal.
+                    // Matches Android: RECORDING_COLOR #C62828, TRANSCRIBING_COLOR #E65100.
+                    colors: rvm.isTranscribing
+                        ? [.pillTranscribing, .pillTranscribing]
+                        : rvm.isRecording
+                            ? [.pillRecording, .pillRecording]
+                            : [.pillPrimary, .pillPrimaryVariant],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 ))
-                .shadow(color: Color.pillPrimary.opacity(0.45), radius: 10, x: 0, y: 5)
+                .shadow(color: (rvm.isTranscribing
+                    ? Color.pillTranscribing
+                    : rvm.isRecording
+                        ? Color.pillRecording
+                        : Color.pillPrimary).opacity(0.45),
+                        radius: 10, x: 0, y: 5)
 
             if rvm.isTranscribing {
                 ProgressView()
                     .tint(.white)
                     .scaleEffect(0.9)
             } else if rvm.isRecording {
-                // Active recording: keep the stop-recording indicator.
                 Image(systemName: "stop.fill")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(.white)
             } else {
-                // Idle inside the recording body — show custom illustration with
-                // mic.fill fallback if the asset is unavailable.
-                EchoIllustrationImage(size: pillW - 16)
+                // Idle — mic wave icon in dark taupe (readable on nude background)
+                EchoMicWaveIcon(size: pillW - 16,
+                                color: Color(red: 0.42, green: 0.33, blue: 0.31))
             }
         }
         .frame(width: pillW, height: pillH)
         .overlay(
-            Circle()
+            RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(Color.white.opacity(_pulseOpacity), lineWidth: 2)
                 .scaleEffect(_pulseScale)
                 .animation(
