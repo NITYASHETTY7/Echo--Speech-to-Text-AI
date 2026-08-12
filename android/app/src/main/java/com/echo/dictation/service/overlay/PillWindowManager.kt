@@ -590,10 +590,10 @@ class PillWindowManager @Inject constructor(
         /** Icon occupies this fraction of the pill's content area (85–90% target). */
         private const val ICON_SIZE_RATIO = 0.87f
 
-        /** Echo's original idle-state identity gradient — teal, per user spec. */
-        private const val IDLE_GRADIENT_START  = 0xFF009999.toInt()
-        private const val IDLE_GRADIENT_CENTER = 0xFF008888.toInt()
-        private const val IDLE_GRADIENT_END    = 0xFF007979.toInt()
+        /** Echo's idle-state identity gradient — warm nude/dusty-rose, per user spec. */
+        private const val IDLE_GRADIENT_START  = 0xFFE1C4BD.toInt()
+        private const val IDLE_GRADIENT_CENTER = 0xFFD5B4AC.toInt()
+        private const val IDLE_GRADIENT_END    = 0xFFC9A49C.toInt()
 
         /** Any finger movement beyond this dp threshold during a touch is classified as a drag. */
         private const val TAP_SLOP_DP = 10f

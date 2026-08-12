@@ -12,7 +12,7 @@
 
     <!-- Waveform — left segment -->
     <path
-        android:strokeColor="#FFFFFFFF"
+        android:strokeColor="#FF6B5450"
         android:strokeWidth="2.4"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
@@ -21,7 +21,7 @@
 
     <!-- Waveform — right segment -->
     <path
-        android:strokeColor="#FFFFFFFF"
+        android:strokeColor="#FF6B5450"
         android:strokeWidth="2.4"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
@@ -30,7 +30,7 @@
 
     <!-- Microphone capsule (larger — spans x=15–33, y=5–27) -->
     <path
-        android:strokeColor="#FFFFFFFF"
+        android:strokeColor="#FF6B5450"
         android:strokeWidth="2.6"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
@@ -39,7 +39,7 @@
 
     <!-- Grille lines inside capsule -->
     <path
-        android:strokeColor="#FFFFFFFF"
+        android:strokeColor="#FF6B5450"
         android:strokeWidth="1.8"
         android:strokeLineCap="round"
         android:fillColor="@android:color/transparent"
@@ -47,7 +47,7 @@
 
     <!-- Capsule divider -->
     <path
-        android:strokeColor="#FFFFFFFF"
+        android:strokeColor="#FF6B5450"
         android:strokeWidth="1.8"
         android:strokeLineCap="round"
         android:fillColor="@android:color/transparent"
@@ -55,7 +55,7 @@
 
     <!-- Stand: stem + base bar -->
     <path
-        android:strokeColor="#FFFFFFFF"
+        android:strokeColor="#FF6B5450"
         android:strokeWidth="2.6"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
